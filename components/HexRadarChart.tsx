@@ -27,6 +27,8 @@ export interface RadarSeries {
   scores: Record<CategoryId, number | null>;
   color: string;
   isBaseline?: boolean;
+  /** 只有不连通基准成绩的维度，显示"不可比"而不是"缺测" */
+  incomparable?: CategoryId[];
 }
 
 interface HexRadarChartProps {
@@ -339,7 +341,9 @@ export function HexRadarChart({
                 >
                   {displayVal !== null && displayVal !== undefined
                     ? displayVal.toFixed(1)
-                    : tx("缺测", "N/A")}
+                    : primarySeries?.incomparable?.includes(axis.id)
+                      ? tx("不可比", "N/C")
+                      : tx("缺测", "N/A")}
                 </text>
               )}
             </g>
@@ -366,7 +370,11 @@ export function HexRadarChart({
                   <span className="text-[var(--color-muted-foreground)]">
                     {s.name}{" "}
                     <strong className="font-semibold text-[var(--color-foreground)]">
-                      {v !== null ? v.toFixed(1) : tx("缺测", "N/A")}
+                      {v !== null
+                        ? v.toFixed(1)
+                        : s.incomparable?.includes(hoveredAxis)
+                          ? tx("不可比", "N/C")
+                          : tx("缺测", "N/A")}
                     </strong>
                   </span>
                 </span>

@@ -77,8 +77,8 @@ export function CompareView({
   const [pickerQuery, setPickerQuery] = useState("");
 
   const ranked = useMemo(
-    () => recomputeRankings(snapshot.models, weights, "overall"),
-    [snapshot.models, weights]
+    () => recomputeRankings(snapshot.models, weights, "overall", snapshot.rules.min_coverage),
+    [snapshot.models, snapshot.rules.min_coverage, weights]
   );
 
   const modelMap = useMemo(() => {
@@ -111,6 +111,7 @@ export function CompareView({
         name: m.display_name,
         scores: m.category_scores,
         color: RADAR_PALETTE[idx % RADAR_PALETTE.length],
+        incomparable: m.incomparable_categories,
       })),
     [activeModels]
   );
@@ -215,7 +216,7 @@ export function CompareView({
                           style={{ backgroundColor: color }}
                         />
                         <span className="font-mono text-[11px] font-medium text-[var(--color-muted-foreground)]">
-                          #{m.dynamicRank} · {m.organization}
+                          #{m.dynamicComplete ? "" : "≈"}{m.dynamicRank} · {m.organization}
                         </span>
                       </div>
 
@@ -328,7 +329,7 @@ export function CompareView({
                           </div>
                         </div>
                         <span className="ml-2 shrink-0 font-mono text-[11px] text-[var(--color-muted-foreground)]">
-                          #{cand.dynamicRank} · {cand.dynamicScore.toFixed(1)}
+                          #{cand.dynamicComplete ? "" : "≈"}{cand.dynamicRank} · {cand.dynamicScore.toFixed(1)}
                         </span>
                       </button>
                     ))}
@@ -469,12 +470,27 @@ export function CompareView({
                                   {d && d.benchmarks > 0 && tone && (
                                     <div className={tone.badgeClass}>
                                       {tx(
-                                        `${d.benchmarks} 项 · ${d.families} 来源`,
-                                        `${d.benchmarks} bmk · ${d.families} src`
+                                        `${d.benchmarks} 项 · ${d.families} 独立来源`,
+                                        `${d.benchmarks} bmk · ${d.families} indep. src`
                                       )}
                                     </div>
                                   )}
+                                  {m.single_benchmark_categories?.includes(axis.id) && (
+                                    <div className="font-mono text-[9px] text-[var(--color-faint)]">
+                                      {tx("单基准，仅供参考", "single benchmark")}
+                                    </div>
+                                  )}
                                 </div>
+                              ) : m.incomparable_categories?.includes(axis.id) ? (
+                                <span
+                                  className="text-xs text-[var(--color-warning)]"
+                                  title={tx(
+                                    "只有和本维度主榜不连通的基准成绩，没法同台比较",
+                                    "Only results on boards disconnected from the main set"
+                                  )}
+                                >
+                                  {tx("不可比", "Not comparable")}
+                                </span>
                               ) : (
                                 <span className="text-xs text-[var(--color-faint)]">
                                   {tx("缺测", "Untested")}
@@ -585,7 +601,7 @@ export function CompareView({
                 <tbody>
                   <tr>
                     <td className="text-[var(--color-muted-foreground)]">
-                      {tx("综合得分 & 90% CI", "Overall Score & 90% CI")}
+                      {tx("综合得分 · 不确定度区间", "Overall Score · Uncertainty")}
                     </td>
                     {activeModels.map((m) => (
                       <td key={m.canonical_id} className="text-right font-mono font-medium">

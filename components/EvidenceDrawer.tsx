@@ -11,14 +11,16 @@ import {
 } from "lucide-react";
 import { useLang } from "@/lib/i18n";
 import {
+  describeIncomplete,
   formatContext,
+  formatCost,
   formatPrice,
   formatTokens,
   getCategoryEvidenceDepth,
   getEvidenceDepthTone,
   type WeightedModelRow,
 } from "@/lib/scoring";
-import type { BenchmarkMeta, CategoryId } from "@/lib/types";
+import type { BenchmarkMeta, CategoryId, LedgerItem } from "@/lib/types";
 import { HexRadarChart, type RadarSeries } from "./HexRadarChart";
 
 interface EvidenceDrawerProps {
@@ -26,6 +28,8 @@ interface EvidenceDrawerProps {
   originTop?: number | null;
   benchmarks: Record<string, BenchmarkMeta>;
   baselineScores?: Record<CategoryId, number | null>;
+  /** 数据完整的门槛（已测维度占权重的比例），用于"数据不全"说明 */
+  minCoverage: number;
   onClose: () => void;
 }
 
@@ -47,6 +51,7 @@ export function EvidenceDrawer({
   originTop = null,
   benchmarks,
   baselineScores,
+  minCoverage,
   onClose,
 }: EvidenceDrawerProps) {
   const { lang, catLabel, tx } = useLang();
@@ -89,6 +94,84 @@ export function EvidenceDrawer({
   ];
   const catDepth = getCategoryEvidenceDepth(model, benchmarks);
   const harnessRows = model.ledger.filter((item) => item.harness || item.effort);
+  const ledgerGroups = categories
+    .map((cat) => ({ cat, items: model.ledger.filter((item) => item.category === cat) }))
+    .filter((group) => group.items.length > 0);
+
+  const renderLedgerItem = (item: LedgerItem, idx: number) => {
+    const bmeta = benchmarks[item.benchmark_id];
+    const badge = SOURCE_BADGE[item.source_type] ?? SOURCE_BADGE.independent_run;
+    const tier = bmeta?.tier ?? "A";
+    return (
+      <div
+        key={`${item.benchmark_id}-${idx}`}
+        className="flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-xs transition-colors hover:bg-[var(--color-raise)]"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className={TIER_CLS[tier]}>Tier {tier}</span>
+            <span className="font-medium text-[var(--color-foreground)]">{item.benchmark_name}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
+            <span className={badge.cls}>{lang === "en" ? badge.en : badge.zh}</span>
+            <span>{item.source_family}</span>
+            {item.harness && <span>· {item.harness}</span>}
+            {item.effort && (
+              <span title={item.effort_note || undefined} className="font-mono">
+                ({item.effort})
+              </span>
+            )}
+            {item.date && <span className="font-mono text-[10px]">· {item.date}</span>}
+          </div>
+          {item.effort_note && (
+            <div className="mt-0.5 text-[10px] text-[var(--color-faint)]">{item.effort_note}</div>
+          )}
+        </div>
+
+        <div className="flex items-center gap-3 text-right">
+          <div>
+            <div className="font-mono font-semibold tabular-nums text-[var(--color-foreground)]">
+              {item.raw_display}
+            </div>
+            {bmeta && (
+              <div className="font-mono text-[10px] text-[var(--color-faint)]">
+                {!bmeta.scored
+                  ? tx("外部对照 (不进主分)", "Ref Only (Non-IRT)")
+                  : bmeta.comparable === false
+                    ? tx("未计分 · 与本维度主榜不连通", "Not scored · disconnected from main set")
+                    : bmeta.core === false
+                      ? tx(`辅助权重 ×${bmeta.base_weight.toFixed(2)}`, `Aux ×${bmeta.base_weight.toFixed(2)}`)
+                      : tx(`基准权重 ×${bmeta.base_weight.toFixed(2)}`, `Weight ×${bmeta.base_weight.toFixed(2)}`)}
+                {bmeta.scored && bmeta.comparable !== false && bmeta.freshness_factor < 1 && (
+                  <span
+                    title={
+                      bmeta.last_activity
+                        ? tx(`最近一次更新 ${bmeta.last_activity}`, `Last activity ${bmeta.last_activity}`)
+                        : undefined
+                    }
+                  >
+                    {" · "}
+                    {bmeta.freshness === "archived"
+                      ? tx(`已归档 ×${bmeta.freshness_factor.toFixed(2)}`, `Archived ×${bmeta.freshness_factor.toFixed(2)}`)
+                      : tx(`陈旧 ×${bmeta.freshness_factor.toFixed(2)}`, `Stale ×${bmeta.freshness_factor.toFixed(2)}`)}
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+          <a
+            href={item.source_url}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={tx(`查看 ${item.benchmark_name} 原始榜单`, `Open ${item.benchmark_name} source`)}
+            className="ib"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </a>
+        </div>
+      </div>
+    );
+  };
 
   const radarSeries: RadarSeries[] = [
     ...(baselineScores
@@ -107,6 +190,7 @@ export function EvidenceDrawer({
       name: model.display_name,
       scores: model.category_scores,
       color: "var(--color-primary)",
+      incomparable: model.incomparable_categories,
     },
   ];
 
@@ -133,12 +217,21 @@ export function EvidenceDrawer({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-xs font-medium text-[var(--color-primary)]">
-                #{model.rank}
+                #{model.complete ? "" : "≈"}
+                {model.rank}
               </span>
               <h2 className="text-lg font-semibold tracking-tight text-[var(--color-foreground)]">
                 {model.display_name}
               </h2>
               {model.is_open_weight && <span className="tag g">Open Weights</span>}
+              {!model.complete && (
+                <span className="tag w">
+                  {tx(
+                    `数据不全 · 已测 ${Math.round(model.coverage * 100)}%`,
+                    `Incomplete · ${Math.round(model.coverage * 100)}% measured`
+                  )}
+                </span>
+              )}
               <span className={`tag ${model.evidence_status === "Supported" ? "g" : "w"}`}>
                 <i />
                 {model.evidence_status} · {model.core_independent_family_count ?? model.independent_family_count}{" "}
@@ -149,6 +242,11 @@ export function EvidenceDrawer({
               {model.organization} · {tx(`覆盖 ${model.benchmark_count} 项基准 / ${model.observation_count} 条实测记录`, `${model.benchmark_count} benchmarks · ${model.observation_count} observations`)}
               {model.latest_date ? ` · ${tx("最新", "Latest")} ${model.latest_date}` : ""}
             </p>
+            {!model.dynamicComplete && (
+              <p className="mt-1.5 text-[11.5px] leading-relaxed text-[var(--color-warning)]">
+                {describeIncomplete(model, minCoverage, catLabel, tx, true)}
+              </p>
+            )}
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
@@ -188,12 +286,25 @@ export function EvidenceDrawer({
               <div
                 className="whitespace-nowrap font-mono text-[10px] text-[var(--color-faint)]"
                 title={tx(
-                  "90% 置信区间：反映目前样本量与缺失维度导致的估计稳健范围，非单次最高/最低分",
-                  "90% Confidence Interval from Fisher Information & missing-dimension penalty (not min/max)"
+                  "不确定度区间（按模型假设约 90%）：反映各基准成绩的波动和缺测维度，不是单次最高/最低分，也不包含脚手架、推理档位差异",
+                  "Uncertainty range (~90% under model assumptions): benchmark noise and missing dimensions; not min/max, excludes harness / effort differences"
                 )}
               >
-                90% CI {model.ci_90[0].toFixed(1)}–{model.ci_90[1].toFixed(1)}
+                {tx("区间", "Range")} {model.ci_90[0].toFixed(1)}–{model.ci_90[1].toFixed(1)}
               </div>
+              {Object.values(model.category_scores).some((s) => s === null) && (
+                <div
+                  className="whitespace-nowrap font-mono text-[10px] text-[var(--color-faint)]"
+                  title={tx(
+                    "缺的维度不编分数；综合分 = 已测维度加权平均 + 按六维都测过的模型估出的修正，算法见方法论页示例",
+                    "Missing dimensions get no made-up score; overall = measured mean + an adjustment estimated from fully measured models (see the Methodology walkthrough)"
+                  )}
+                >
+                  {tx("已测", "Measured")} {model.measured_score.toFixed(1)} · {tx("缺测修正", "Adj.")}{" "}
+                  {model.missing_adjustment >= 0 ? "+" : "−"}
+                  {Math.abs(model.missing_adjustment).toFixed(1)}
+                </div>
+              )}
             </div>
 
             <div className="blk p-3.5">
@@ -226,11 +337,7 @@ export function EvidenceDrawer({
               <div className="mt-1 font-mono text-lg font-medium text-[var(--color-foreground)]">
                 {formatContext(model.context_length)}
               </div>
-              <div className="text-[10px] text-[var(--color-faint)]">
-                {model.avg_eval_cost_usd
-                  ? `${tx("均耗", "Avg eval")} $${model.avg_eval_cost_usd}`
-                  : "tokens"}
-              </div>
+              <div className="text-[10px] text-[var(--color-faint)]">{tx("最大上下文", "max context")}</div>
             </div>
           </div>
 
@@ -274,6 +381,7 @@ export function EvidenceDrawer({
                   const depth = catDepth[c];
                   const tone = getEvidenceDepthTone(depth.families);
                   const isAuxOnly = model.auxiliary_only_categories?.includes(c);
+                  const isSingle = val !== null && model.single_benchmark_categories?.includes(c);
                   return (
                     <div key={c} className="grid grid-cols-12 items-center gap-2.5 text-xs">
                       <span
@@ -291,9 +399,17 @@ export function EvidenceDrawer({
                         {val !== null && depth.benchmarks > 0 && (
                           <span className={tone.badgeClass}>
                             {tx(
-                              `${depth.benchmarks} 项 · ${depth.families} 来源`,
-                              `${depth.benchmarks} bmk · ${depth.families} src`
+                              `${depth.benchmarks} 项 · ${depth.families} 独立来源`,
+                              `${depth.benchmarks} bmk · ${depth.families} indep. src`
                             )}
+                          </span>
+                        )}
+                        {isSingle && (
+                          <span
+                            className="rounded bg-[var(--color-fill2)] px-1 py-0.5 font-mono text-[9px] text-[var(--color-faint)]"
+                            title={tx("这个维度只有 1 项基准入模，分数参考价值有限", "Only one benchmark in this dimension")}
+                          >
+                            {tx("单基准", "1 bmk")}
                           </span>
                         )}
                         {isAuxOnly && (
@@ -322,6 +438,16 @@ export function EvidenceDrawer({
                               </span>
                             )}
                           </>
+                        ) : model.incomparable_categories?.includes(c) ? (
+                          <span
+                            className="text-[var(--color-warning)]"
+                            title={tx(
+                              "这一维只有和本维度主榜不连通的基准成绩（见下方台账），没法和其它模型放在同一把尺子上比，不计分",
+                              "Only results on boards disconnected from this dimension's main set (see ledger); not comparable, not scored"
+                            )}
+                          >
+                            {tx("不可比", "Not comparable")}
+                          </span>
                         ) : (
                           <span className="text-[var(--color-faint)]">{tx("缺测", "Untested")}</span>
                         )}
@@ -380,7 +506,7 @@ export function EvidenceDrawer({
                           {row.raw_display}
                         </td>
                         <td className="text-right font-mono text-[11px] tabular-nums text-[var(--color-muted-foreground)]">
-                          {row.cost_usd ? `$${row.cost_usd.toFixed(2)}` : "—"}
+                          {formatCost(row.cost_usd, row.cost_unit, lang)}
                           {row.tokens ? ` · ${formatTokens(row.tokens)}` : ""}
                         </td>
                       </tr>
@@ -402,68 +528,25 @@ export function EvidenceDrawer({
                 )}
               </h3>
             </div>
-            <div className="blk divide-y divide-[var(--color-hair)] p-2">
-              {model.ledger.map((item, idx) => {
-                const bmeta = benchmarks[item.benchmark_id];
-                const badge = SOURCE_BADGE[item.source_type] ?? SOURCE_BADGE.independent_run;
-                const tier = bmeta?.tier ?? "A";
+            {/* 按 6 个维度分组展示，组头给出条数和该维度分 */}
+            <div className="space-y-2.5">
+              {ledgerGroups.map((group) => {
+                const catScore = model.category_scores[group.cat];
                 return (
-                  <div
-                    key={`${item.benchmark_id}-${idx}`}
-                    className="flex items-center justify-between gap-3 rounded-xl px-3 py-2.5 text-xs transition-colors hover:bg-[var(--color-raise)]"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5">
-                        <span className={TIER_CLS[tier]}>Tier {tier}</span>
-                        <span className="font-medium text-[var(--color-foreground)]">
-                          {item.benchmark_name}
-                        </span>
-                        <span className="text-[10.5px] text-[var(--color-faint)]">
-                          · {catLabel(item.category)}
-                        </span>
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-[var(--color-muted-foreground)]">
-                        <span className={badge.cls}>{lang === "en" ? badge.en : badge.zh}</span>
-                        <span>{item.source_family}</span>
-                        {item.harness && <span>· {item.harness}</span>}
-                        {item.effort && (
-                          <span title={item.effort_note || undefined} className="font-mono">
-                            ({item.effort})
-                          </span>
-                        )}
-                        {item.date && <span className="font-mono text-[10px]">· {item.date}</span>}
-                      </div>
-                      {item.effort_note && (
-                        <div className="mt-0.5 text-[10px] text-[var(--color-faint)]">
-                          {item.effort_note}
-                        </div>
-                      )}
+                  <div key={group.cat} className="blk p-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-1.5 pt-1">
+                      <span className="text-xs font-semibold text-[var(--color-foreground)]">
+                        {catLabel(group.cat)}
+                      </span>
+                      <span className="font-mono text-[10.5px] text-[var(--color-muted-foreground)]">
+                        {tx(`${group.items.length} 条`, `${group.items.length} runs`)} ·{" "}
+                        {catScore !== null
+                          ? tx(`维度分 ${catScore.toFixed(1)}`, `Score ${catScore.toFixed(1)}`)
+                          : tx("未计分", "Not scored")}
+                      </span>
                     </div>
-
-                    <div className="flex items-center gap-3 text-right">
-                      <div>
-                        <div className="font-mono font-semibold tabular-nums text-[var(--color-foreground)]">
-                          {item.raw_display}
-                        </div>
-                        {bmeta && (
-                          <div className="font-mono text-[10px] text-[var(--color-faint)]">
-                            {!bmeta.scored
-                              ? tx("外部对照 (不进主分)", "Ref Only (Non-IRT)")
-                              : bmeta.core === false
-                                ? tx(`辅助权重 ×${bmeta.base_weight.toFixed(2)}`, `Aux ×${bmeta.base_weight.toFixed(2)}`)
-                                : tx(`基准权重 ×${bmeta.base_weight.toFixed(2)}`, `Weight ×${bmeta.base_weight.toFixed(2)}`)}
-                          </div>
-                        )}
-                      </div>
-                      <a
-                        href={item.source_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        aria-label={tx(`查看 ${item.benchmark_name} 原始榜单`, `Open ${item.benchmark_name} source`)}
-                        className="ib"
-                      >
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
+                    <div className="divide-y divide-[var(--color-hair)]">
+                      {group.items.map((item, idx) => renderLedgerItem(item, idx))}
                     </div>
                   </div>
                 );

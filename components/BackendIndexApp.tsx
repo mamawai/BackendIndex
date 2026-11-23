@@ -30,9 +30,9 @@ export function BackendIndexApp({ snapshot }: BackendIndexAppProps) {
   const [isDark, setIsDark] = useState(true);
 
   const defaultCompareIds = useMemo(() => {
-    const ranked = recomputeRankings(snapshot.models, DEFAULT_WEIGHTS, "overall");
+    const ranked = recomputeRankings(snapshot.models, DEFAULT_WEIGHTS, "overall", snapshot.rules.min_coverage);
     return buildComparePreset(ranked, "top4", 4);
-  }, [snapshot.models]);
+  }, [snapshot.models, snapshot.rules.min_coverage]);
 
   const [compareIds, setCompareIds] = useState<string[]>(defaultCompareIds);
 
@@ -104,6 +104,7 @@ export function BackendIndexApp({ snapshot }: BackendIndexAppProps) {
         originTop={selectedEntry?.originTop ?? null}
         benchmarks={snapshot.benchmarks}
         baselineScores={baselineScores}
+        minCoverage={snapshot.rules.min_coverage}
         onClose={() => setSelectedEntry(null)}
       />
       </div>

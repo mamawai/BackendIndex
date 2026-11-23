@@ -28,6 +28,8 @@ class Observation:
     effort: str | None = None
     date: str | None = None
     cost_usd: float | None = None
+    # 成本口径："per_task" 每题 / "per_run" 整轮跑完全部题目，两者不能放一起平均
+    cost_unit: str | None = None
     tokens: float | None = None
     duration_sec: float | None = None
     margin: float | None = None
@@ -43,6 +45,8 @@ class ModelMetadata:
     display_name: str
     organization: str
     release_date: str | None = None
+    # OpenRouter 上架日期，只在查不到发布日期时给新鲜度判断兜底
+    listed_date: str | None = None
     is_open_weight: bool = False
     context_length: int | None = None
     prompt_price_per_1m: float | None = None

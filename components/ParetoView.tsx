@@ -28,8 +28,8 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
   const [hoveredId, setHoveredId] = useState<string | null>(null);
 
   const ranked = useMemo(
-    () => recomputeRankings(snapshot.models, weights, "overall"),
-    [snapshot.models, weights]
+    () => recomputeRankings(snapshot.models, weights, "overall", snapshot.rules.min_coverage),
+    [snapshot.models, snapshot.rules.min_coverage, weights]
   );
 
   const points = useMemo(() => {
@@ -321,7 +321,9 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
                     fill="var(--color-on-ink)"
                     className="text-[11px] font-semibold"
                   >
-                    #{hovered.model.dynamicRank} {hovered.model.display_name}
+                    #{hovered.model.dynamicComplete ? "" : "≈"}
+                    {hovered.model.dynamicRank} {hovered.model.display_name}
+                    {hovered.model.dynamicComplete ? "" : tx("（数据不全）", " (incomplete)")}
                   </text>
                   <text
                     x={bx + 11}

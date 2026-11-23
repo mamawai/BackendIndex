@@ -9,7 +9,7 @@ import json
 import re
 import time
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -20,7 +20,7 @@ from bs4 import BeautifulSoup
 
 from config import BENCHMARK_REGISTRY, SourceType
 from models import ModelMetadata, Observation
-from normalizer import ModelNormalizer, infer_organization
+from normalizer import ModelNormalizer, infer_organization, normalize_effort, normalize_harness
 
 ROOT = Path(__file__).resolve().parent
 CACHE_DIR = ROOT / "cache"
@@ -138,6 +138,7 @@ def make_obs(
     source_url: str | None = None,
     date: str | None = None,
     cost_usd: float | None = None,
+    cost_unit: str | None = None,
     tokens: float | None = None,
     duration_sec: float | None = None,
     margin: float | None = None,
@@ -162,10 +163,11 @@ def make_obs(
         source_family=source_family or spec.source_family,
         source_type=source_type or spec.default_source_type,
         source_url=resolved_url,
-        harness=parsed_harness or harness,
-        effort=effort or parsed_eff,
+        harness=normalize_harness(parsed_harness or harness),
+        effort=normalize_effort(effort or parsed_eff),
         date=normalize_iso_date(date),
         cost_usd=cost_usd,
+        cost_unit=cost_unit if cost_usd is not None else None,
         tokens=tokens,
         duration_sec=duration_sec,
         margin=margin,
@@ -213,12 +215,19 @@ def fetch_openrouter_and_aa(
         )
         hf_id = m.get("hugging_face_id")
         is_open = bool(hf_id)
+        created = m.get("created")
+        listed = (
+            datetime.fromtimestamp(created, tz=timezone.utc).strftime("%Y-%m-%d")
+            if isinstance(created, (int, float)) and created > 0
+            else None
+        )
 
         if cid not in meta_map or (":" not in mid and meta_map[cid].openrouter_id and ":" in meta_map[cid].openrouter_id):
             meta_map[cid] = ModelMetadata(
                 canonical_id=cid,
                 display_name=disp,
                 organization=org,
+                listed_date=listed,
                 is_open_weight=is_open,
                 context_length=m.get("context_length"),
                 prompt_price_per_1m=round(prompt_1m, 4) if prompt_1m is not None else None,
@@ -380,6 +389,7 @@ def fetch_epoch_archive(
                 source_url=row_url,
                 date=eval_date,
                 cost_usd=cost_val,
+                cost_unit="per_task",
                 tokens=tok_val,
                 extra=extra,
             )
@@ -416,7 +426,8 @@ def fetch_tbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observati
             rate, margin = parse_pct(cols[3])
             if rate is None:
                 continue
-            date = cols[4] if len(cols) > 4 else None
+            # 这一列是"模型发布日期"不是评测日期：不当观测日期用，只留给新鲜度判断
+            release = normalize_iso_date(cols[4]) if len(cols) > 4 else None
             tokens = parse_tokens(cols[5]) if len(cols) > 5 else None
             cost = parse_cost(cols[6]) if len(cols) > 6 else None
             obs_list.append(
@@ -427,10 +438,11 @@ def fetch_tbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observati
                     rate,
                     cols[3],
                     harness=agent,
-                    date=date,
                     cost_usd=cost,
+                    cost_unit="per_run",
                     tokens=tokens,
                     margin=margin,
+                    extra={"model_release_date": release} if release else None,
                 )
             )
     return obs_list
@@ -462,6 +474,7 @@ def fetch_bughunt(norm: ModelNormalizer, refresh: bool = False) -> list[Observat
                 source_type="benchmark_run",
                 date=r.get("date"),
                 cost_usd=float(r["cost_usd"]) if r.get("cost_usd") is not None else None,
+                cost_unit="per_run",
                 duration_sec=float(r["wall_min"]) * 60.0 if r.get("wall_min") is not None else None,
             )
         )
@@ -511,6 +524,7 @@ def fetch_swe_rebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obse
                 cols[2],
                 org_hint=org_hint,
                 cost_usd=cost,
+                cost_unit="per_task",
                 tokens=tokens,
                 margin=margin,
                 force_agent_product=is_agent_badge,
@@ -536,6 +550,8 @@ def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
         tbl = soup.find("table")
         if not tbl:
             continue
+        # Vals 页面上明确写了"已归档、不再测新模型"的基准，新鲜度直接按陈旧算
+        archived = "Archived Benchmark" in html
         headers = [th.get_text(" ", strip=True).lower() for th in tbl.find_all("tr")[0].find_all(["th", "td"])]
         for tr in tbl.find_all("tr")[1:]:
             cols = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
@@ -560,7 +576,9 @@ def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
                     harness=harness,
                     source_type=stype,
                     cost_usd=cost,
+                    cost_unit="per_task",
                     tokens=tokens,
+                    extra={"archived": True} if archived else None,
                 )
             )
     return obs_list
@@ -621,6 +639,7 @@ def fetch_livesqlbench(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
             source_url=row_url,
             date=date,
             cost_usd=cost,
+            cost_unit="per_task",
         )
         if infer_organization(obs.display_name) == "Other":
             obs.is_agent_product = True
@@ -754,8 +773,9 @@ def fetch_otelbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observ
                 m_key,
                 rate,
                 f"{stats.get('PassRate', 0.0):.1f}% ({stats.get('Passed')}/{stats.get('Runs')})",
+                # AvgCost = 总花费 / 运行次数，每次运行是一道题
                 cost_usd=stats.get("AvgCost"),
-                date="2026-01",
+                cost_unit="per_task",
             )
         )
     return obs_list
@@ -794,7 +814,7 @@ def fetch_compilebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
                 rate,
                 f"{rate * 100:.1f}% ({int(st['ok'])}/{int(st['total'])})",
                 cost_usd=round(st["cost"] / st["total"], 4),
-                date="2025-10-15",
+                cost_unit="per_task",
             )
         )
     return obs_list
@@ -871,6 +891,7 @@ def fetch_aider_polyglot(norm: ModelNormalizer, refresh: bool = False) -> list[O
                 harness=harness,
                 date=dt,
                 cost_usd=cost,
+                cost_unit="per_run",
             )
         )
     return obs_list
@@ -1062,6 +1083,7 @@ def fetch_bfcl(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
                 harness=f"BFCL ({mode_tag})" if mode_tag else "BFCL",
                 source_url=_valid_http_url(row.get("Model Link")) or url,
                 cost_usd=cost,
+                cost_unit="per_run",
             )
         )
     return obs_list

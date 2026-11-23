@@ -47,10 +47,23 @@ export function TopLeaders({ leaders, onSelectModel }: TopLeadersProps) {
                   <Icon className="h-3.5 w-3.5" />
                   {label}
                 </span>
-                <span className={`tag ${m.evidence_status === "Supported" ? "g" : "w"}`}>
-                  <i />
-                  {m.evidence_status}
-                </span>
+                {m.dynamicComplete ? (
+                  <span className={`tag ${m.evidence_status === "Supported" ? "g" : "w"}`}>
+                    <i />
+                    {m.evidence_status}
+                  </span>
+                ) : (
+                  <span
+                    className="tag w"
+                    title={tx(
+                      "已测维度不到门槛，综合分里缺的部分是按六维都测过的模型估的，名次仅供参考",
+                      "Incomplete data: the missing part of the overall is estimated from fully measured models, so the rank is indicative"
+                    )}
+                  >
+                    <i />
+                    {tx("数据不全", "Incomplete")}
+                  </span>
+                )}
               </div>
 
               <h3 className="mt-3 truncate text-[17px] font-semibold tracking-[-0.015em] text-[var(--color-foreground)]">
@@ -73,11 +86,11 @@ export function TopLeaders({ leaders, onSelectModel }: TopLeadersProps) {
                 <span
                   className="font-mono text-[11px] tabular-nums text-[var(--color-faint)]"
                   title={tx(
-                    "90% 置信区间：基于实测样本量与缺测维度计算的估计稳健范围",
-                    "90% Confidence Interval from Fisher Information & missing-dimension penalty"
+                    "不确定度区间（按模型假设约 90%）：反映各基准成绩的波动和缺测维度，不包含脚手架、推理档位差异",
+                    "Uncertainty range (~90% under model assumptions): benchmark-to-benchmark noise and missing dimensions; excludes harness / effort differences"
                   )}
                 >
-                  90% CI {ciLow.toFixed(0)}–{ciHigh.toFixed(0)}
+                  {tx("区间", "Range")} {ciLow.toFixed(0)}–{ciHigh.toFixed(0)}
                 </span>
               </div>
 

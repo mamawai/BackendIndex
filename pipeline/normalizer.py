@@ -140,7 +140,8 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "qwen-3-6-plus": ("qwen3-6-plus", "Qwen3.6 Plus", "Alibaba"),
     "qwen3-8-omni-flash": ("qwen3-8-omni-flash", "Qwen3.8 Omni Flash", "Alibaba"),
     "qwen4-max": ("qwen4-max", "Qwen4 Max", "Alibaba"),
-    "deepseek-v4-flash-0731": ("deepseek-v4-flash", "DeepSeek V4 Flash", "DeepSeek"),
+    # 0731 是独立发布的新版本（OpenRouter / Hugging Face 都单独上架），不能并进 0423 原版
+    "deepseek-v4-flash-0731": ("deepseek-v4-flash-0731", "DeepSeek V4 Flash 0731", "DeepSeek"),
     "deepseek-v4-flash-0423": ("deepseek-v4-flash", "DeepSeek V4 Flash", "DeepSeek"),
     "claude-haiku-5-5": ("claude-haiku-5-5", "Claude Haiku 5.5", "Anthropic"),
     "haiku-5-5": ("claude-haiku-5-5", "Claude Haiku 5.5", "Anthropic"),
@@ -197,6 +198,56 @@ AGENT_PRODUCT_MARKERS = (
     "tcdataagent",
     "judge",
 )
+
+
+# 脚手架统一写法：只合并大小写、连字符/空格不同的同一个东西，名字不同的（如 Codex 和 Codex CLI）不硬合
+HARNESS_CANON: dict[str, str] = {
+    "claude code": "Claude Code",
+    "codex cli": "Codex CLI",
+    "codex": "Codex",
+    "mini swe agent": "Mini-SWE-agent",
+    "antigravity cli": "Antigravity CLI",
+    "openhands": "OpenHands",
+    "opencode": "OpenCode",
+    "devin cli": "Devin CLI",
+}
+
+# 推理档位统一写法
+EFFORT_CANON: dict[str, str] = {
+    "extra high": "xhigh",
+    "extra-high": "xhigh",
+    "x-high": "xhigh",
+    "x high": "xhigh",
+}
+
+
+def normalize_harness(harness: str | None) -> str | None:
+    """Unify harness spelling (case / hyphen variants) while keeping version tails like '· v2.1'."""
+    if not harness or not harness.strip():
+        return None
+    base, sep, tail = harness.strip().partition(" · ")
+    key = re.sub(r"[-_\s]+", " ", base.strip().lower())
+    canon = HARNESS_CANON.get(key, base.strip())
+    return f"{canon}{sep}{tail}" if sep else canon
+
+
+def harness_family(harness: str | None) -> str | None:
+    """Harness name without version / provider tails ('Claude Code / DeepSeek API' -> 'Claude Code')."""
+    norm = normalize_harness(harness)
+    if not norm:
+        return None
+    return re.split(r"\s+[·/]\s+", norm)[0].strip() or None
+
+
+def normalize_effort(effort: str | None) -> str | None:
+    """Lower-case reasoning effort labels and fold synonyms ('Extra High' -> 'xhigh')."""
+    if not effort or not effort.strip():
+        return None
+    low = re.sub(r"\s+", " ", effort.strip().lower())
+    # 上游写"unknown"等于没给档位
+    if low in ("unknown", "n/a", "-"):
+        return None
+    return EFFORT_CANON.get(low, low)
 
 
 def infer_organization(name: str, fallback: str | None = None) -> str:
@@ -285,8 +336,13 @@ class ModelNormalizer:
             grp, org = self.epoch_version_to_group[low]
             eff_m = EFFORT_PATTERN.search(text)
             effort = next((g for g in eff_m.groups() if g), None) if eff_m else None
-            slug = slugify(grp)
-            cid, disp, canonical_org = self.known_aliases.get(slug, (slug, grp, org))
+            # 手写别名优先：同一个版本串（如 mistral-large-4-0）不能这里归 Epoch 分组、别处归手写别名
+            ver_slug = slugify(text[: eff_m.start()] if eff_m else text)
+            if ver_slug in EXPLICIT_ALIASES:
+                cid, disp, canonical_org = EXPLICIT_ALIASES[ver_slug]
+            else:
+                slug = slugify(grp)
+                cid, disp, canonical_org = self.known_aliases.get(slug, (slug, grp, org))
             return cid, disp, canonical_org, effort, harness_hint, False
 
         is_agent_product = any(marker in low for marker in AGENT_PRODUCT_MARKERS)
@@ -373,14 +429,7 @@ class ModelNormalizer:
             cleaned,
             flags=re.I,
         )
-        if harness:
-            h_map = {
-                "claude-code": "Claude Code",
-                "codex-cli": "Codex CLI",
-                "mini-swe-agent": "Mini-SWE-agent",
-                "antigravity-cli": "Antigravity CLI",
-            }
-            harness = h_map.get(harness.lower().strip(), harness)
+        harness = normalize_harness(harness)
         if cleaned.lower().startswith("anthropic ") and not cleaned.lower().startswith("anthropic claude"):
             cleaned = "Claude " + cleaned[len("anthropic "):].strip()
 
