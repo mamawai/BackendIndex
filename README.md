@@ -1,8 +1,8 @@
 # Backend.Index — 独立后端工程代码大模型排行榜
 
-**Backend.Index** 是一个面向真实软件工程与后端开发场景的独立大模型评测索引与证据溯源平台。项目通过 Python 数据管道聚合全球 **18** 个公开上游源、**40** 项后端与系统工程基准测试（其中 37 项参与 2PL IRT 校准、3 项为外部/原始倍数对照参考，涵盖仓库级研发、系统重建与演进、运维与工具协议、Text-to-SQL、性能与算法及后端安全），并结合 `90% CI` 不确定性区间与可追溯 Evidence Ledger 提供直观评测看板与多模型对比分析。
+**Backend.Index** 是一个面向真实软件工程与后端开发场景的独立大模型评测索引与证据溯源平台。项目通过 Python 数据管道聚合全球 **22** 个公开上游源、**45** 项后端与系统工程基准测试（其中 41 项参与 2PL IRT 校准、4 项为外部/原始倍数对照参考，涵盖仓库级研发、系统重建与演进、运维与工具协议、Text-to-SQL、性能与算法及后端安全），并结合 `90% CI` 不确定性区间与可追溯 Evidence Ledger 提供直观评测看板与多模型对比分析。
 
-> 当前数据快照（`BackendIndex-2PL-IRT-v2.1`，生成时间 `2026-11-23T04:00:04Z`）：共收录 **126** 个入榜模型（`89 Supported` / `37 Estimated`）、**40** 项追踪基准与 **1,892** 条原始评测观测记录。
+> 当前数据快照（`BackendIndex-2PL-IRT-v2.1`，生成时间 `2026-11-23T05:21:56Z`）：共收录 **143** 个入榜模型（`106 Supported` / `37 Estimated`）、**45** 项追踪基准与 **2,403** 条原始评测观测记录。
 
 ---
 
@@ -26,11 +26,11 @@
 | 维度 ID | 中文名称 | English | 默认权重 | 评测侧重点 |
 | :--- | :--- | :--- | :---: | :--- |
 | `repo` | 仓库研发 | Repo Engineering | **25%** | 已有代码库理解（SWE-Atlas QnA）、缺陷定位修复、单测补全（Test Writing）与多文件补丁交付（SWE-rebench、FrontierSWE Implementation、Bug Hunt Bench 等） |
-| `systems` | 运维构建与 SRE | Systems, DevOps & SRE | **20%** | 容器终端排错、复杂构建工具链、OpenTelemetry 可观测性与结构化工具协议（Terminal-Bench、CompileBench、OTelBench、MCP Atlas、BFCL v4 等） |
+| `systems` | 运维构建与 SRE | Systems, DevOps & SRE | **20%** | 容器终端排错、K8s 生产 SRE 根因定位、复杂构建工具链与 OpenTelemetry 可观测性（Terminal-Bench、ITBench-AA、CompileBench、OTelBench、MCP Atlas、BFCL v4 等） |
 | `architecture` | 系统重建与演进 | Architecture & Evolution | **15%** | 跨文件架构重构（Refactoring）、跨语言迁移（Code Migration）与无源码系统重建（ProgramBench、MirrorCode、NL2Repo） |
-| `sql` | 数据库 SQL | Database & SQL | **15%** | 企业宽表 Text-to-SQL、能力分优化评估（ability_score）、SQL 方言迁移与 DBT 建模（Spider 2.0、LiveSQLBench、SCALE SQL 等） |
-| `performance` | 性能与算法 | Performance & Algorithms | **15%** | 真实仓库代码运行时性能优化与竞赛级算法复杂度求解（GSO Opt@1、Vals IOI v2；AlgoTune 原始倍数对照） |
-| `security` | 后端安全 | Backend Security | **10%** | 历史漏洞 PoC 复现与修复、无引导渗透 CTF 与阶段性利用能力（CyberGym Level-1、Cybench、Vals Cyber、ExploitBench 等） |
+| `sql` | 数据库 SQL | Database & SQL | **15%** | 企业宽表 Text-to-SQL、ClickHouse 分析查询正确性、SQL 优化与 DBT 建模（Spider 2.0、LiveSQLBench、SCALE SQL、Tinybird LLM SQL 等） |
+| `performance` | 性能与算法 | Performance & Algorithms | **15%** | 真实仓库软件运行时性能优化与竞赛级算法求解（GSO Opt@1、FrontierSWE Performance、Vals IOI v2；AlgoTune / InferenceBench 原始加速倍数对照） |
+| `security` | 后端安全 | Backend Security | **10%** | 历史漏洞 PoC 复现修复、无引导 CTF、漏洞利用及安全后端服务构建（CyberGym Level-1、Cybench、Vals Cyber、ExploitBench、AutoBaxBench Hard 等） |
 
 ---
 
@@ -63,7 +63,7 @@ BackendIndex/
 │   ├── CompareView.tsx          # 最多 4 模型 6 维雷达叠加与多维 PK 页
 │   ├── EvidenceDrawer.tsx       # 行内上弹证据溯源与 Ledger 详情浮窗
 │   ├── ParetoView.tsx           # API 定价 vs 分数 Pareto 前沿散点图
-│   ├── MethodologyView.tsx      # 计分原则、40 项基准清单与数据源健康状态
+│   ├── MethodologyView.tsx      # 计分原则、45 项基准清单与数据源健康状态
 │   ├── HexRadarChart.tsx        # SVG 六边形多模型对比雷达图
 │   ├── WeightPopover.tsx        # 自定义 6 维权重调优浮层
 │   └── ui/SlidingControls.tsx   # ResizeObserver 驱动的平滑滑动选择器
@@ -74,8 +74,8 @@ BackendIndex/
 │   ├── scoring.ts               # 客户端动态权重重算与 90% CI 更新
 │   └── types.ts                 # 前后端共享类型定义
 ├── pipeline/
-│   ├── config.py                # 6 维权重、来源系数与 40 项基准注册表
-│   ├── fetchers.py              # 14 个上游榜单与定价 API 抓取器
+│   ├── config.py                # 6 维权重、来源系数与 45 项基准注册表
+│   ├── fetchers.py              # 22 个上游抓取来源与定价 API 解析器
 │   ├── normalizer.py            # 跨榜单模型名归一化与厂商归属映射
 │   ├── irt_scorer.py            # 2PL IRT 校准引擎、CI 计算与护栏排序
 │   ├── models.py                # 观测记录与模型元数据 dataclass

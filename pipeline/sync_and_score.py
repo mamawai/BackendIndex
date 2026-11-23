@@ -10,6 +10,7 @@ from pathlib import Path
 from config import BENCHMARK_REGISTRY, CATEGORY_META, CATEGORY_WEIGHTS
 from fetchers import (
     fetch_aider_polyglot,
+    fetch_autobaxbench_hard,
     fetch_benchlm_supplements,
     fetch_bfcl,
     fetch_bughunt,
@@ -18,6 +19,8 @@ from fetchers import (
     fetch_cybergym,
     fetch_epoch_archive,
     fetch_gso,
+    fetch_inferencebench,
+    fetch_itbench_aa,
     fetch_livesqlbench,
     fetch_multiswebench,
     fetch_openrouter_and_aa,
@@ -26,6 +29,7 @@ from fetchers import (
     fetch_spider2,
     fetch_swe_rebench,
     fetch_tbench,
+    fetch_tinybird_sql,
     fetch_vals,
 )
 from irt_scorer import score_all_models
@@ -105,6 +109,12 @@ def run_pipeline(refresh: bool = False) -> Path:
     print("8/15 Fetching Scale SWE-Atlas / SWE-bench Pro / Multilingual / NL2Repo / MCP Atlas...")
     ingest("benchlm_supplements", lambda: fetch_benchlm_supplements(norm, refresh=refresh))
 
+    print("9/15 Fetching AutoBaxBench Hard, Tinybird SQL, ITBench-AA & InferenceBench...")
+    ingest("autobaxbench_hard", lambda: fetch_autobaxbench_hard(norm, refresh=refresh))
+    ingest("tinybird_sql", lambda: fetch_tinybird_sql(norm, refresh=refresh))
+    ingest("itbench_aa", lambda: fetch_itbench_aa(norm, refresh=refresh))
+    ingest("inferencebench", lambda: fetch_inferencebench(norm, refresh=refresh))
+
     print(f"\nTotal raw observations collected: {len(all_obs)}")
     print("Running Category-First 2PL IRT Calibration...")
     scored_models, calibrations = score_all_models(all_obs)
@@ -183,6 +193,8 @@ def run_pipeline(refresh: bool = False) -> Path:
             if "raw_value" in o.extra:
                 entry["raw_value"] = o.extra["raw_value"]
                 entry["raw_unit"] = o.extra.get("raw_unit")
+            if "effort_note" in o.extra:
+                entry["effort_note"] = o.extra["effort_note"]
             ledger.append(entry)
 
         # Keep observation_count strictly consistent with the deduplicated ledger length

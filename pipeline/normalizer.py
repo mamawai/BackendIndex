@@ -112,6 +112,8 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "grok-4-5": ("grok-4-5", "Grok 4.5", "xAI"),
     "grok-4-6": ("grok-4-6", "Grok 4.6", "xAI"),
     "grok-4-1-fast": ("grok-4-1-fast", "Grok 4.1 Fast", "xAI"),
+    "grok-4-1-fast-reasoning": ("grok-4-1-fast-reasoning", "Grok 4.1 Fast Reasoning", "xAI"),
+    "grok-4-fast-reasoning": ("grok-4-fast-reasoning", "Grok 4 Fast Reasoning", "xAI"),
     "grok-4": ("grok-4", "Grok 4", "xAI"),
     "deepseek-v4-pro": ("deepseek-v4-pro", "DeepSeek V4 Pro", "DeepSeek"),
     "deepseek-v4-1-flash": ("deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "DeepSeek"),
@@ -149,15 +151,22 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "grok-4-7": ("grok-4-7", "Grok 4.7", "xAI"),
     "minimax-m3": ("minimax-m3", "MiniMax M3", "MiniMax"),
     "qwen3-6-max": ("qwen3-6-max", "Qwen3.6 Max", "Alibaba"),
+    "qwen3-6-max-preview": ("qwen-3-6-max-preview", "Qwen 3.6 Max (Preview)", "Alibaba"),
+    "qwen3-6-35b-a3b": ("qwen-3-6-35b-a3b", "Qwen 3.6 35B-A3B", "Alibaba"),
+    "qwen3-5-397b-a17b": ("qwen3-5-397b", "Qwen3.5 397B", "Alibaba"),
+    "mistral-large-4-0": ("mistral-large-4", "Mistral Large 4", "Mistral AI"),
+    "hy4-preview": ("hy4-preview", "Hy4 preview", "Tencent"),
+    "muse-wonder": ("muse-wonder-1-0", "Muse Wonder 1.0", "Meta"),
+    "muse-wonder-1-0": ("muse-wonder-1-0", "Muse Wonder 1.0", "Meta"),
     "glm-5-1": ("glm-5-1", "GLM-5.1", "Z.ai"),
     "mimo-v2-6-pro": ("mimo-v2-6-pro", "MiMo-V2.6-Pro", "Xiaomi"),
     "mimo-v2-6-flash": ("mimo-v2-6-flash", "MiMo-V2.6-Flash", "Xiaomi"),
 }
 
 EFFORT_PATTERN = re.compile(
-    r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|unknown)\s*\)"
-    r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking)\s*\]"
-    r"|_(xhigh|high|medium|low|max|minimal|none|promax|unknown)"
+    r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|reasoning|ultra|unknown)\s*\)"
+    r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking|reasoning|ultra)\s*\]"
+    r"|_(xhigh|high|medium|low|max|minimal|none|promax|ultra|unknown)"
     r"|-(xhigh|high|medium|low|max)(?=$|-)"
     r"|\s*-\s*thinking(?:-\d+k)?)$",
     re.IGNORECASE,
@@ -327,8 +336,9 @@ class ModelNormalizer:
                 cleaned = inner_clean
                 is_agent_product = False
 
-        # Peel trailing (MM/YY) benchmark date tags cleanly before alias/effort checks
+        # Peel trailing (MM/YY) benchmark date tags and AA '(..., Default Fallback)' markers cleanly
         cleaned = re.sub(r"\s*\(\d{2}/\d{2}\)\s*$", "", cleaned).strip()
+        cleaned = re.sub(r"\(\s*([^()]+?)\s*,\s*Default Fallback\s*\)$", r"(\1)", cleaned, flags=re.I).strip()
 
         # Strip precision quantization tags (FP8, NVFP4) separately from reasoning effort
         while QUANT_PATTERN.search(cleaned):

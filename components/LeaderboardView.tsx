@@ -8,6 +8,8 @@ import {
   BENCHMARK_SHORT_NAMES,
   formatContext,
   formatPrice,
+  getCategoryEvidenceDepth,
+  getEvidenceDepthTone,
   recomputeRankings,
   type WeightedModelRow,
 } from "@/lib/scoring";
@@ -33,6 +35,15 @@ const VIEW_IDS: BoardView[] = [
   "sql",
   "performance",
   "security",
+];
+
+const OVERALL_CHIPS: { id: CategoryId; short: string; wideOnly?: boolean }[] = [
+  { id: "repo", short: "Repo" },
+  { id: "architecture", short: "Arch" },
+  { id: "systems", short: "Sys" },
+  { id: "sql", short: "SQL" },
+  { id: "performance", short: "Perf", wideOnly: true },
+  { id: "security", short: "Sec", wideOnly: true },
 ];
 
 export function LeaderboardView({
@@ -199,7 +210,7 @@ export function LeaderboardView({
               </th>
               <th className="hidden lg:table-cell">
                 {view === "overall"
-                  ? tx("六大能力维度", "6-Dimension Breakdown")
+                  ? tx("六大能力维度（上标 = 来源数）", "6-Dimension Breakdown (sup = sources)")
                   : tx("该维度代表基准实测", "Key Measured Benchmarks")}
               </th>
               <th className="hidden text-right sm:table-cell">
@@ -212,6 +223,7 @@ export function LeaderboardView({
             {(search.trim() || showAllRows ? filtered : filtered.slice(0, 30)).map((m, idx) => {
               const [ciLow, ciHigh] = m.dynamicCi;
               const keyBms = view !== "overall" ? getKeyBenchmarksForCategory(m, view) : [];
+              const catDepth = view === "overall" ? getCategoryEvidenceDepth(m, snapshot.benchmarks) : null;
 
               return (
                 // Anchor table rows by rank slot so scores roll and CI bars glide in place across tabs
@@ -275,26 +287,35 @@ export function LeaderboardView({
                   </td>
 
                   <td className="hidden lg:table-cell">
-                    {view === "overall" ? (
+                    {view === "overall" && catDepth ? (
                       <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] tabular-nums text-[var(--color-muted-foreground)]">
-                        <span className="rounded-md bg-[var(--color-fill)] px-1.5 py-0.5">
-                          Repo <strong className="font-medium text-[var(--color-foreground)]">{m.category_scores.repo?.toFixed(0) ?? "—"}</strong>
-                        </span>
-                        <span className="rounded-md bg-[var(--color-fill)] px-1.5 py-0.5">
-                          Arch <strong className="font-medium text-[var(--color-foreground)]">{m.category_scores.architecture?.toFixed(0) ?? "—"}</strong>
-                        </span>
-                        <span className="rounded-md bg-[var(--color-fill)] px-1.5 py-0.5">
-                          Sys <strong className="font-medium text-[var(--color-foreground)]">{m.category_scores.systems?.toFixed(0) ?? "—"}</strong>
-                        </span>
-                        <span className="rounded-md bg-[var(--color-fill)] px-1.5 py-0.5">
-                          SQL <strong className="font-medium text-[var(--color-foreground)]">{m.category_scores.sql?.toFixed(0) ?? "—"}</strong>
-                        </span>
-                        <span className="hidden rounded-md bg-[var(--color-fill)] px-1.5 py-0.5 xl:inline-block">
-                          Perf <strong className="font-medium text-[var(--color-foreground)]">{m.category_scores.performance?.toFixed(0) ?? "—"}</strong>
-                        </span>
-                        <span className="hidden rounded-md bg-[var(--color-fill)] px-1.5 py-0.5 xl:inline-block">
-                          Sec <strong className="font-medium text-[var(--color-foreground)]">{m.category_scores.security?.toFixed(0) ?? "—"}</strong>
-                        </span>
+                        {OVERALL_CHIPS.map((chip) => {
+                          const s = m.category_scores[chip.id];
+                          const d = catDepth[chip.id];
+                          const tone = d.families > 0 ? getEvidenceDepthTone(d.families) : null;
+                          return (
+                            <span
+                              key={chip.id}
+                              title={
+                                s !== null
+                                  ? tx(
+                                      `${catLabel(chip.id)} ${s.toFixed(1)} · ${d.benchmarks} 项计分基准 / ${d.families} 个独立来源`,
+                                      `${catLabel(chip.id)} ${s.toFixed(1)} · ${d.benchmarks} scored bmk / ${d.families} src`
+                                    )
+                                  : tx(`${catLabel(chip.id)} · 缺测`, `${catLabel(chip.id)} · Untested`)
+                              }
+                              className={`${chip.wideOnly ? "hidden xl:inline-block" : ""} rounded-md px-1.5 py-0.5 ${tone && s !== null ? tone.chipClass : "bg-[var(--color-fill)]"}`}
+                            >
+                              {chip.short}{" "}
+                              <strong className="font-medium text-[var(--color-foreground)]">
+                                {s?.toFixed(0) ?? "—"}
+                              </strong>
+                              {s !== null && d.families > 0 && tone && (
+                                <sup className={tone.supClass}>{d.families}</sup>
+                              )}
+                            </span>
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="flex flex-wrap items-center gap-1.5 font-mono text-[11px] tabular-nums">
@@ -305,7 +326,7 @@ export function LeaderboardView({
                           >
                             {BENCHMARK_SHORT_NAMES[bid] || snapshot.benchmarks[bid]?.name}{" "}
                             <span className="text-[var(--color-muted-foreground)]">
-                              {val.score.toFixed(0)}%
+                              {val.display || `${val.score.toFixed(0)}%`}
                             </span>
                           </span>
                         ))}

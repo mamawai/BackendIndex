@@ -53,6 +53,7 @@ export interface LedgerItem {
   source_url: string;
   harness: string | null;
   effort: string | null;
+  effort_note?: string | null;
   date: string | null;
   cost_usd: number | null;
   tokens: number | null;

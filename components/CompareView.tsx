@@ -9,6 +9,8 @@ import {
   BENCHMARK_SHORT_NAMES,
   formatContext,
   formatPrice,
+  getCategoryEvidenceDepth,
+  getEvidenceDepthTone,
   recomputeRankings,
   type WeightedModelRow,
 } from "@/lib/scoring";
@@ -42,11 +44,15 @@ const KEY_SHARED_BENCHMARKS = [
   "scale_swe_atlas_refactoring",
   "terminal_bench_41",
   "otelbench",
+  "itbench_aa",
   "livesqlbench",
   "scale_sql_optimization",
+  "tinybird_sql",
   "gso",
+  "frontierswe_perf",
   "vals_ioi",
   "vals_cyber",
+  "autobaxbench_hard",
 ];
 
 const PRESET_LIST: { key: ComparePresetKey; zh: string; en: string }[] = [
@@ -89,6 +95,14 @@ export function CompareView({
         .slice(0, 4),
     [compareIds, modelMap]
   );
+
+  const depthById = useMemo(() => {
+    const out = new Map<string, ReturnType<typeof getCategoryEvidenceDepth>>();
+    for (const m of activeModels) {
+      out.set(m.canonical_id, getCategoryEvidenceDepth(m, snapshot.benchmarks));
+    }
+    return out;
+  }, [activeModels, snapshot.benchmarks]);
 
   const radarSeries: RadarSeries[] = useMemo(
     () =>
@@ -415,6 +429,8 @@ export function CompareView({
                         {activeModels.map((m, idx) => {
                           const v = m.category_scores[axis.id];
                           const se = m.category_se[axis.id];
+                          const d = depthById.get(m.canonical_id)?.[axis.id];
+                          const tone = d && d.families > 0 ? getEvidenceDepthTone(d.families) : null;
                           const isWin = maxVal !== null && v === maxVal;
                           const color = RADAR_PALETTE[idx % RADAR_PALETTE.length];
 
@@ -450,6 +466,14 @@ export function CompareView({
                                       }}
                                     />
                                   </div>
+                                  {d && d.benchmarks > 0 && tone && (
+                                    <div className={tone.badgeClass}>
+                                      {tx(
+                                        `${d.benchmarks} 项 · ${d.families} 来源`,
+                                        `${d.benchmarks} bmk · ${d.families} src`
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               ) : (
                                 <span className="text-xs text-[var(--color-faint)]">
@@ -519,7 +543,7 @@ export function CompareView({
                                         : "text-[var(--color-foreground)]"
                                     }
                                   >
-                                    {entry.score.toFixed(1)}%
+                                    {entry.display || `${entry.score.toFixed(1)}%`}
                                   </span>
                                   {entry.harness && (
                                     <div className="text-[10px] text-[var(--color-faint)]">

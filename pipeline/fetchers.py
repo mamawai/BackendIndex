@@ -12,6 +12,7 @@ import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import yaml
@@ -314,6 +315,7 @@ def fetch_epoch_archive(
     specs_map: list[tuple[str, str, str, str | None, str | None]] = [
         ("mirrorcode.csv", "mirrorcode", "mean_score", None, None),
         ("frontierswe_external.csv", "frontierswe", "Implementation", "Harness", None),
+        ("frontierswe_external.csv", "frontierswe_perf", "Performance", "Harness", None),
         ("frontiercode_external.csv", "frontiercode", "Main score", "Harness", "Reasoning effort"),
         ("deepswe_external.csv", "deepswe", "Pass@1", "Harness", "Reasoning effort"),
         ("cursorbench_external.csv", "cursorbench", "Score", None, "Reasoning level"),
@@ -1141,3 +1143,274 @@ def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> l
                 )
             )
     return obs_list
+
+
+def fetch_autobaxbench_hard(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch ETH SRI AutoBaxBench Hard sec_pass@1 JSON, excluding author-contaminated models (*)."""
+    url = "https://raw.githubusercontent.com/eth-sri/baxbench-website/main/static/data/leaderboard_data_abb_hard.json"
+    rows = json.loads(cached_text(url, refresh=refresh))
+    obs_list: list[Observation] = []
+    # Official page notes Opus 5.5 & Fable 5.2 hit context limits at highest reasoning on certain tasks and ran 'high'
+    context_downgraded = {"claude-opus-5-5", "claude-fable-5-2"}
+
+    for row in rows:
+        raw_model = (row.get("model") or "").strip()
+        sec_pass = row.get("sec_pass_1")
+        if not raw_model or sec_pass is None:
+            continue
+        # '*' designates models used to generate AutoBaxBench tasks (potential contamination)
+        if "*" in raw_model:
+            continue
+
+        val = max(0.0, min(1.0, float(sec_pass)))
+        extra: dict[str, Any] = {}
+        if row.get("pass_1") is not None:
+            extra["pass_1"] = round(float(row["pass_1"]), 4)
+        if row.get("insec_pass") is not None:
+            extra["insec_pass"] = round(float(row["insec_pass"]), 4)
+
+        obs = make_obs(
+            norm,
+            "autobaxbench_hard",
+            raw_model,
+            val,
+            f"{val * 100:.1f}%",
+            source_url="https://baxbench.com/autobaxbuilder/",
+            extra=extra,
+        )
+        if obs.canonical_model_id in context_downgraded:
+            obs.effort = "max (partial high)"
+            obs.extra["effort_note"] = "Partial tasks downgraded from max to high due to context limit"
+        obs_list.append(obs)
+    return obs_list
+
+
+def fetch_tinybird_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Tinybird LLM SQL Exactness scores from SSR payload, excluding routers, aliases & latency penalty."""
+    url = "https://llm-benchmark.tinybird.live/"
+    html = cached_text(url, refresh=refresh)
+    unesc = html.replace('\\"', '"').replace("\\\\", "\\")
+    blocks = re.findall(r'\{[^{}]{0,1500}"exactnessScore"\s*:\s*[0-9.]+[^{}]{0,1500}\}', unesc)
+
+    # Rank tie-breakers deterministically: canonical base slug > non-preview/dated/exacto > higher success > higher exactness
+    best_by_key: dict[tuple[str, str | None], tuple[tuple[int, int, int, float], Observation]] = {}
+    for blk in blocks:
+        try:
+            d = json.loads(blk)
+        except json.JSONDecodeError:
+            continue
+
+        provider = (d.get("provider") or "").strip()
+        model = (d.get("model") or "").strip()
+        exactness = d.get("exactnessScore")
+        total_q = d.get("totalQueries") or 0
+        succ_q = d.get("successfulQueries") or 0
+        if not provider or not model or exactness is None:
+            continue
+        prov_low = provider.lower()
+        mod_low = model.lower()
+        if (
+            provider.startswith("~")
+            or "openrouter" in prov_low
+            or "router" in prov_low
+            or prov_low in ("human", "unbiased", "stealth")
+            or mod_low == "human"
+            or "router" in mod_low
+            or "switchyard" in mod_low
+            or "pareto" in mod_low
+            or "-latest" in mod_low
+            or mod_low.endswith((":free", ":beta", ":extended"))
+            or total_q <= 0
+            or succ_q <= 0
+            # eval.ts defaults exactnessScore=0 when validationMap lacks a record despite successful queries
+            or float(exactness) <= 0.0
+        ):
+            continue
+
+        clean_model = model
+        effort: str | None = None
+        tag_m = re.search(r":(thinking|exacto)$", clean_model, flags=re.I)
+        is_exacto = False
+        if tag_m:
+            tag_val = tag_m.group(1).lower()
+            clean_model = clean_model[: tag_m.start()].strip()
+            if tag_val == "thinking":
+                effort = "thinking"
+            elif tag_val == "exacto":
+                is_exacto = True
+
+        rate = max(0.0, min(1.0, float(exactness) / 100.0))
+        model_url = f"https://llm-benchmark.tinybird.live/models/{quote(model, safe='.-_')}"
+        obs = make_obs(
+            norm,
+            "tinybird_sql",
+            clean_model,
+            rate,
+            f"{float(exactness):.2f}/100",
+            org_hint=provider,
+            effort=effort,
+            source_url=model_url,
+            extra={
+                "raw_value": round(float(exactness), 2),
+                "raw_unit": "pts_100",
+                "total_queries": int(total_q),
+                "successful_queries": int(succ_q),
+            },
+        )
+        # Disambiguate same-(model, effort) collisions (e.g. -0731 / -preview / reversed claude-4.5-sonnet)
+        norm_clean_slug = re.sub(r"[^a-z0-9]+", "-", clean_model.lower().replace(".", "-")).strip("-")
+        is_dated_or_preview = bool(re.search(r"(?:-preview|-\d{4}|-\d{8})$", clean_model.lower()))
+        prio = (
+            1 if (is_exacto or is_dated_or_preview) else 0,
+            0 if norm_clean_slug == obs.canonical_model_id else 1,
+            -int(succ_q),
+            -float(exactness),
+        )
+        key = (obs.canonical_model_id, obs.effort)
+        if key not in best_by_key or prio < best_by_key[key][0]:
+            best_by_key[key] = (prio, obs)
+
+    return [pair[1] for pair in best_by_key.values()]
+
+
+def fetch_itbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Artificial Analysis ITBench-AA (59 Kubernetes SRE root-cause localization snapshots)."""
+    url = "https://artificialanalysis.ai/evaluations/itbench-aa"
+    html = cached_text(url, refresh=refresh)
+    unesc = html.replace('\\"', '"').replace("\\\\", "\\")
+
+    dec = json.JSONDecoder()
+    best_by_key: dict[tuple[str, str | None], Observation] = {}
+    for m in re.finditer(r'\{"id":"[0-9a-f-]{36}","slug":"', unesc):
+        try:
+            obj, _ = dec.raw_decode(unesc, m.start())
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        sre = obj.get("itbenchSre")
+        if not isinstance(sre, (int, float)):
+            continue
+
+        raw_name = (obj.get("shortName") or obj.get("name") or obj.get("slug") or "").strip()
+        if not raw_name:
+            continue
+        creator_name = (obj.get("creator") or {}).get("name")
+        raw_effort = obj.get("effort")
+        if isinstance(raw_effort, dict):
+            aa_effort = (raw_effort.get("slug") or raw_effort.get("label") or "").strip().lower() or None
+        else:
+            aa_effort = str(raw_effort).strip().lower() if raw_effort is not None else None
+        if aa_effort in ("none", "default", "unknown"):
+            aa_effort = None
+
+        rate = max(0.0, min(1.0, float(sre)))
+        extra: dict[str, Any] = {}
+        if isinstance(obj.get("itbenchAvgTurnsPerTask"), (int, float)):
+            extra["avg_turns"] = round(float(obj["itbenchAvgTurnsPerTask"]), 2)
+
+        obs = make_obs(
+            norm,
+            "itbench_aa",
+            raw_name,
+            rate,
+            f"{rate * 100:.1f}%",
+            org_hint=creator_name,
+            effort=aa_effort,
+            source_url=url,
+            extra=extra,
+        )
+        key = (obs.canonical_model_id, obs.effort)
+        if key not in best_by_key or obs.raw_score > best_by_key[key].raw_score:
+            best_by_key[key] = obs
+
+    return list(best_by_key.values())
+
+
+def _extract_js_object_array(js_text: str, marker_regex: str) -> list[str]:
+    """Extract balanced object literals from a JS array literal containing marker_regex."""
+    marker = re.search(marker_regex, js_text)
+    if not marker:
+        return []
+    start = js_text.rfind("[", 0, marker.start())
+    if start == -1:
+        return []
+    depth, in_s, esc, quote_ch, end = 0, False, False, "", start
+    for idx in range(start, len(js_text)):
+        ch = js_text[idx]
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if in_s:
+            if ch == quote_ch:
+                in_s = False
+            continue
+        if ch in ('"', "'"):
+            in_s = True
+            quote_ch = ch
+            continue
+        if ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+            if depth == 0:
+                end = idx + 1
+                break
+    return re.findall(r"\{[^{}]+\}", js_text[start:end])
+
+
+def fetch_inferencebench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch InferenceBench aggregate speedup multipliers (scored=False reference alongside AlgoTune)."""
+    index_url = "https://inferencebench.ai/"
+    html = cached_text(index_url, refresh=refresh)
+    script_m = re.search(r'src=["\'](script\.js[^"\']*)["\']', html)
+    script_path = script_m.group(1) if script_m else "script.js"
+    js_url = f"https://inferencebench.ai/{script_path.lstrip('/')}"
+    js_text = cached_text(js_url, refresh=refresh)
+
+    # Prefer prompt v1.0.1 (†) runs when both old (v1.0) and new prompt versions exist for a model+effort
+    best_by_key: dict[tuple[str, str | None], tuple[tuple[int, float], Observation]] = {}
+    for blk in _extract_js_object_array(js_text, r"\{\s*rank:\s*1\b"):
+        r_type = re.search(r'\btype:\s*"([^"]+)"', blk)
+        r_model = re.search(r'\bmodel:\s*"([^"]+)"', blk)
+        r_scaffold = re.search(r'\bscaffold:\s*"([^"]+)"', blk)
+        r_val = re.search(r"\bvalue:\s*([0-9.]+)", blk)
+        r_sem = re.search(r"\bsem:\s*([0-9.]+)", blk)
+        if not (r_type and r_model and r_scaffold and r_val and r_sem):
+            continue
+        if r_type.group(1) != "agent":
+            continue
+
+        raw_model = r_model.group(1)
+        scaffold = r_scaffold.group(1)
+        val = float(r_val.group(1))
+        sem = float(r_sem.group(1))
+        r_mark = re.search(r'\bmark:\s*"([^"]*)"', blk)
+        mark = r_mark.group(1) if r_mark else ""
+        is_v101 = ("†" in mark) or ("prompt v1.0.1" in scaffold.lower())
+        harness_clean = re.sub(r"\s*·\s*prompt\s+v[\d.]+", "", scaffold, flags=re.I).strip() or None
+
+        obs = make_obs(
+            norm,
+            "inferencebench",
+            raw_model,
+            0.0,
+            f"{val:.2f}×",
+            harness=harness_clean,
+            source_url=index_url,
+            extra={
+                "raw_value": round(val, 4),
+                "raw_unit": "speedup_x",
+                "sem": round(sem, 3),
+                "prompt_version": "v1.0.1" if is_v101 else "v1.0",
+            },
+        )
+        prio = (0 if is_v101 else 1, -val)
+        key = (obs.canonical_model_id, obs.effort)
+        if key not in best_by_key or prio < best_by_key[key][0]:
+            best_by_key[key] = (prio, obs)
+
+    return [pair[1] for pair in best_by_key.values()]

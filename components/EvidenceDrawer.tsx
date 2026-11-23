@@ -14,6 +14,8 @@ import {
   formatContext,
   formatPrice,
   formatTokens,
+  getCategoryEvidenceDepth,
+  getEvidenceDepthTone,
   type WeightedModelRow,
 } from "@/lib/scoring";
 import type { BenchmarkMeta, CategoryId } from "@/lib/types";
@@ -85,6 +87,7 @@ export function EvidenceDrawer({
     "performance",
     "security",
   ];
+  const catDepth = getCategoryEvidenceDepth(model, benchmarks);
   const harnessRows = model.ledger.filter((item) => item.harness || item.effort);
 
   const radarSeries: RadarSeries[] = [
@@ -268,11 +271,13 @@ export function EvidenceDrawer({
                 {categories.map((c) => {
                   const val = model.category_scores[c];
                   const se = model.category_se[c];
+                  const depth = catDepth[c];
+                  const tone = getEvidenceDepthTone(depth.families);
                   const isAuxOnly = model.auxiliary_only_categories?.includes(c);
                   return (
                     <div key={c} className="grid grid-cols-12 items-center gap-2.5 text-xs">
                       <span
-                        className="col-span-4 inline-flex items-center gap-1 font-medium text-[var(--color-foreground)]"
+                        className="col-span-5 inline-flex flex-wrap items-center gap-1.5 font-medium text-[var(--color-foreground)]"
                         title={
                           isAuxOnly
                             ? tx(
@@ -283,13 +288,21 @@ export function EvidenceDrawer({
                         }
                       >
                         <span className="truncate">{catLabel(c)}</span>
+                        {val !== null && depth.benchmarks > 0 && (
+                          <span className={tone.badgeClass}>
+                            {tx(
+                              `${depth.benchmarks} 项 · ${depth.families} 来源`,
+                              `${depth.benchmarks} bmk · ${depth.families} src`
+                            )}
+                          </span>
+                        )}
                         {isAuxOnly && (
                           <span className="rounded bg-[var(--color-fill2)] px-1 py-0.5 font-mono text-[9px] text-[var(--color-faint)]">
                             {tx("辅助", "Aux")}
                           </span>
                         )}
                       </span>
-                      <div className="col-span-5">
+                      <div className="col-span-4">
                         <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-fill2)]">
                           {val !== null && (
                             <div
@@ -350,9 +363,17 @@ export function EvidenceDrawer({
                             {row.harness || "Default"}
                           </span>
                           {row.effort && (
-                            <span className="ml-1.5 font-mono text-[10.5px] text-[var(--color-primary)]">
+                            <span
+                              title={row.effort_note || undefined}
+                              className="ml-1.5 font-mono text-[10.5px] text-[var(--color-primary)]"
+                            >
                               {row.effort}
                             </span>
+                          )}
+                          {row.effort_note && (
+                            <div className="mt-0.5 text-[10px] text-[var(--color-faint)]">
+                              {row.effort_note}
+                            </div>
                           )}
                         </td>
                         <td className="text-right font-mono tabular-nums text-[var(--color-foreground)]">
@@ -405,9 +426,18 @@ export function EvidenceDrawer({
                         <span className={badge.cls}>{lang === "en" ? badge.en : badge.zh}</span>
                         <span>{item.source_family}</span>
                         {item.harness && <span>· {item.harness}</span>}
-                        {item.effort && <span className="font-mono">({item.effort})</span>}
+                        {item.effort && (
+                          <span title={item.effort_note || undefined} className="font-mono">
+                            ({item.effort})
+                          </span>
+                        )}
                         {item.date && <span className="font-mono text-[10px]">· {item.date}</span>}
                       </div>
+                      {item.effort_note && (
+                        <div className="mt-0.5 text-[10px] text-[var(--color-faint)]">
+                          {item.effort_note}
+                        </div>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-3 text-right">

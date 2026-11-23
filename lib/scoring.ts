@@ -1,4 +1,4 @@
-import type { CategoryId, ModelEntry } from "./types";
+import type { BenchmarkMeta, CategoryId, ModelEntry } from "./types";
 
 export const DEFAULT_WEIGHTS: Record<CategoryId, number> = {
   repo: 25,
@@ -158,6 +158,89 @@ export function formatTokens(tokens: number | null): string {
   return `${Math.round(tokens)}`;
 }
 
+export interface CategoryEvidenceDepth {
+  benchmarks: number;
+  families: number;
+}
+
+/**
+ * Count distinct IRT-scored benchmarks and independent source families supporting each category.
+ */
+export function getCategoryEvidenceDepth(
+  model: ModelEntry,
+  benchmarks: Record<string, BenchmarkMeta>
+): Record<CategoryId, CategoryEvidenceDepth> {
+  const bms: Record<CategoryId, Set<string>> = {
+    repo: new Set(),
+    architecture: new Set(),
+    systems: new Set(),
+    sql: new Set(),
+    performance: new Set(),
+    security: new Set(),
+  };
+  const fams: Record<CategoryId, Set<string>> = {
+    repo: new Set(),
+    architecture: new Set(),
+    systems: new Set(),
+    sql: new Set(),
+    performance: new Set(),
+    security: new Set(),
+  };
+
+  for (const item of model.ledger) {
+    if (benchmarks[item.benchmark_id]?.scored === false) continue;
+    bms[item.category].add(item.benchmark_id);
+    if (item.source_family) {
+      fams[item.category].add(item.source_family);
+    }
+  }
+
+  return {
+    repo: { benchmarks: bms.repo.size, families: fams.repo.size },
+    architecture: { benchmarks: bms.architecture.size, families: fams.architecture.size },
+    systems: { benchmarks: bms.systems.size, families: fams.systems.size },
+    sql: { benchmarks: bms.sql.size, families: fams.sql.size },
+    performance: { benchmarks: bms.performance.size, families: fams.performance.size },
+    security: { benchmarks: bms.security.size, families: fams.security.size },
+  };
+}
+
+/**
+ * Progressive visual hierarchy by independent source depth:
+ * more independent sources carry stronger positive emphasis, while single-source entries stay gently noted.
+ */
+export function getEvidenceDepthTone(families: number): {
+  badgeClass: string;
+  supClass: string;
+  chipClass: string;
+} {
+  if (families >= 4) {
+    return {
+      badgeClass:
+        "rounded border border-[color-mix(in_srgb,var(--color-gain)_35%,transparent)] bg-[var(--color-gain-soft)] px-1.5 py-0.5 font-mono text-[9.5px] font-semibold text-[var(--color-gain)]",
+      supClass: "ml-0.5 text-[9px] font-semibold text-[var(--color-gain)]",
+      chipClass:
+        "border border-[color-mix(in_srgb,var(--color-gain)_24%,transparent)] bg-[color-mix(in_srgb,var(--color-gain-soft)_55%,var(--color-fill))]",
+    };
+  }
+  if (families >= 2) {
+    return {
+      badgeClass:
+        "rounded border border-[color-mix(in_srgb,var(--color-info)_28%,transparent)] bg-[var(--color-info-soft)] px-1.5 py-0.5 font-mono text-[9.5px] font-medium text-[var(--color-info)]",
+      supClass: "ml-0.5 text-[9px] font-medium text-[var(--color-info)]",
+      chipClass:
+        "border border-[color-mix(in_srgb,var(--color-info)_18%,transparent)] bg-[var(--color-fill)]",
+    };
+  }
+  return {
+    badgeClass:
+      "rounded border border-dashed border-[color-mix(in_srgb,var(--color-warning)_30%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_6%,transparent)] px-1.5 py-0.5 font-mono text-[9.5px] font-normal text-[color-mix(in_srgb,var(--color-warning)_82%,var(--color-muted-foreground))]",
+    supClass:
+      "ml-0.5 text-[9px] font-normal text-[color-mix(in_srgb,var(--color-warning)_78%,var(--color-faint))]",
+    chipClass: "border border-transparent bg-[var(--color-fill)]",
+  };
+}
+
 export const BENCHMARK_SHORT_NAMES: Record<string, string> = {
   swe_rebench: "SWE-rebench",
   frontierswe: "FrontierSWE",
@@ -181,6 +264,7 @@ export const BENCHMARK_SHORT_NAMES: Record<string, string> = {
   mirrorcode: "MirrorCode",
   otelbench: "OTelBench",
   compilebench: "CompileBench",
+  itbench_aa: "ITBench-AA",
   mcpatlas: "MCP Atlas",
   livesqlbench: "LiveSQL",
   scale_sql_understanding: "SCALE Und",
@@ -189,14 +273,18 @@ export const BENCHMARK_SHORT_NAMES: Record<string, string> = {
   spider2_snow: "Spider2 Snow",
   spider2_lite: "Spider2 Lite",
   spider2_dbt: "Spider2 DBT",
+  tinybird_sql: "Tinybird SQL",
   gso: "GSO",
+  frontierswe_perf: "FSWE Perf",
   vals_ioi: "Vals IOI v2",
   algotune: "AlgoTune",
+  inferencebench: "InferenceBench",
   aa_engineering: "AA Eng",
   bfcl_v4: "BFCL v4",
   vals_cyber: "Vals Cyber",
   cybergym: "CyberGym",
   cybench: "Cybench",
   exploitbench: "ExploitBench",
+  autobaxbench_hard: "AutoBax Hard",
   aa_cyber: "AA Cyber",
 };
