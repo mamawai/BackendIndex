@@ -27,8 +27,9 @@ export function TopLeaders({ leaders, onSelectModel }: TopLeadersProps) {
         const { Icon, label } = PLACE_META[idx] || PLACE_META[2];
 
         return (
+          // Anchor podium cards by rank slot so NumberFlow scores and CI bars animate smoothly in place
           <div
-            key={m.canonical_id}
+            key={`pod-${idx}`}
             role="button"
             tabIndex={0}
             onClick={(e) => onSelectModel(m, e.currentTarget.getBoundingClientRect().top)}

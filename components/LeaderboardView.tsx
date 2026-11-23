@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import NumberFlow from "@number-flow/react";
 import { ChevronRight, Search, SlidersHorizontal } from "lucide-react";
 import { useLang } from "@/lib/i18n";
 import {
@@ -208,13 +209,14 @@ export function LeaderboardView({
             </tr>
           </thead>
           <tbody>
-            {(search.trim() || showAllRows ? filtered : filtered.slice(0, 30)).map((m) => {
+            {(search.trim() || showAllRows ? filtered : filtered.slice(0, 30)).map((m, idx) => {
               const [ciLow, ciHigh] = m.dynamicCi;
               const keyBms = view !== "overall" ? getKeyBenchmarksForCategory(m, view) : [];
 
               return (
+                // Anchor table rows by rank slot so scores roll and CI bars glide in place across tabs
                 <tr
-                  key={m.canonical_id}
+                  key={`row-${idx}`}
                   onClick={(e) => onSelectModel(m, e.currentTarget.getBoundingClientRect().top)}
                 >
                   <td className="font-mono text-xs text-[var(--color-muted-foreground)] tabular-nums">
@@ -240,8 +242,11 @@ export function LeaderboardView({
 
                   <td>
                     <div className="flex items-center gap-3">
-                      <span className="w-11 font-mono text-sm font-semibold tabular-nums text-[var(--color-foreground)]">
-                        {m.dynamicScore.toFixed(1)}
+                      <span className="inline-flex w-12 shrink-0 items-center font-mono text-sm font-semibold tabular-nums text-[var(--color-foreground)]">
+                        <NumberFlow
+                          value={m.dynamicScore}
+                          format={{ minimumFractionDigits: 1, maximumFractionDigits: 1 }}
+                        />
                       </span>
                       <div className="hidden w-24 sm:block">
                         <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-fill2)]">
