@@ -37,6 +37,7 @@ export interface BenchmarkMeta {
   base_weight: number;
   description: string;
   scored: boolean;
+  core?: boolean;
 }
 
 export interface LedgerItem {
@@ -76,6 +77,7 @@ export interface ModelEntry {
   category_scores: Record<CategoryId, number | null>;
   category_se: Record<CategoryId, number | null>;
   covered_categories: CategoryId[];
+  auxiliary_only_categories?: CategoryId[];
   benchmark_count: number;
   observation_count: number;
   independent_family_count: number;

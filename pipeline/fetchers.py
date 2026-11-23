@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import json
+import math
 import re
 import time
 import zipfile
@@ -89,6 +90,12 @@ def parse_tokens(text: str) -> float | None:
     return val * mult
 
 
+def _valid_http_url(url: str | None) -> str | None:
+    if url and url.strip().startswith(("http://", "https://")):
+        return url.strip()
+    return None
+
+
 def make_obs(
     norm: ModelNormalizer,
     benchmark_id: str,
@@ -99,7 +106,9 @@ def make_obs(
     org_hint: str | None = None,
     harness: str | None = None,
     effort: str | None = None,
+    source_family: str | None = None,
     source_type: SourceType | None = None,
+    source_url: str | None = None,
     date: str | None = None,
     cost_usd: float | None = None,
     tokens: float | None = None,
@@ -111,6 +120,7 @@ def make_obs(
     cid, disp, org, parsed_eff, parsed_harness, is_agent = norm.normalize(
         raw_model, org_hint=org_hint, harness_hint=harness
     )
+    resolved_url = _valid_http_url(source_url) or spec.source_url
     return Observation(
         raw_model_name=raw_model,
         canonical_model_id=cid,
@@ -121,9 +131,9 @@ def make_obs(
         category=spec.category,
         raw_score=max(0.0, min(1.0, raw_score)),
         raw_display=raw_display,
-        source_family=spec.source_family,
+        source_family=source_family or spec.source_family,
         source_type=source_type or spec.default_source_type,
-        source_url=spec.source_url,
+        source_url=resolved_url,
         harness=parsed_harness or harness,
         effort=effort or parsed_eff,
         date=date,
@@ -139,7 +149,7 @@ def make_obs(
 def fetch_openrouter_and_aa(
     norm: ModelNormalizer, refresh: bool = False
 ) -> tuple[dict[str, ModelMetadata], list[Observation]]:
-    """Fetch OpenRouter live pricing/context/open-weight metadata & embedded AA scores."""
+    """Fetch OpenRouter live pricing/context/open-weight metadata & embedded AA reference scores."""
     raw = json.loads(cached_text("https://openrouter.ai/api/v1/models", refresh=refresh))
     models = raw.get("data", [])
     norm.register_openrouter_models(models)
@@ -176,7 +186,6 @@ def fetch_openrouter_and_aa(
         hf_id = m.get("hugging_face_id")
         is_open = bool(hf_id)
 
-        # Keep base variant if cid already exists (prefer non-suffixed OpenRouter entry)
         if cid not in meta_map or (":" not in mid and meta_map[cid].openrouter_id and ":" in meta_map[cid].openrouter_id):
             meta_map[cid] = ModelMetadata(
                 canonical_id=cid,
@@ -192,6 +201,7 @@ def fetch_openrouter_and_aa(
                 huggingface_id=hf_id,
             )
 
+        # AA scores are stored as external non-IRT references without forged eval dates
         aa = (m.get("benchmarks") or {}).get("artificial_analysis") or {}
         if aa.get("engineering_index") is not None:
             val = float(aa["engineering_index"]) / 100.0
@@ -203,7 +213,6 @@ def fetch_openrouter_and_aa(
                     val,
                     f"{aa['engineering_index']:.1f}",
                     org_hint=org_part,
-                    date="2026-11-20",
                 )
             )
         if aa.get("cyber_index") is not None:
@@ -216,21 +225,32 @@ def fetch_openrouter_and_aa(
                     val,
                     f"{aa['cyber_index']:.1f}",
                     org_hint=org_part,
-                    date="2026-11-20",
                 )
             )
 
     return meta_map, obs_list
 
 
+def _classify_epoch_cybench_row(row: dict[str, str], model_org: str) -> tuple[str | None, SourceType]:
+    """Resolve Cybench provenance from Epoch's Source and Notes columns."""
+    src = (row.get("Source") or "").strip()
+    notes = (row.get("Notes") or "").strip()
+    combined = f"{src} {notes}".lower()
+    if "hal" in combined:
+        return "HAL", "independent_run"
+    if any(k in combined for k in ("model card", "system card")):
+        inferred = infer_organization(src, model_org)
+        return (inferred if inferred != "Other" else model_org), "lab_reported"
+    return "Cybench", "benchmark_run"
+
+
 def fetch_epoch_archive(
     norm: ModelNormalizer, meta_map: dict[str, ModelMetadata], refresh: bool = False
 ) -> list[Observation]:
-    """Ingest Epoch AI benchmark_data.zip CSVs covering backend coding/systems/security."""
+    """Ingest Epoch AI benchmark_data.zip CSVs covering backend coding, systems, and security."""
     zip_bytes = cached_get("https://epoch.ai/data/benchmark_data.zip", refresh=refresh, binary=True)
     zf = zipfile.ZipFile(io.BytesIO(zip_bytes))
 
-    # 1. Register model_metadata.csv first so normalization is exact
     mm_rows = [
         r
         for r in csv.DictReader(io.TextIOWrapper(zf.open("model_metadata.csv"), encoding="utf-8"))
@@ -260,36 +280,49 @@ def fetch_epoch_archive(
             if is_open:
                 meta_map[cid].is_open_weight = True
 
-    specs_map: list[tuple[str, str, str, str | None, str | None]] = [
-        ("mirrorcode.csv", "mirrorcode", "mean_score", None, None),
-        ("frontierswe_external.csv", "frontierswe", "Score", "Harness", None),
-        ("frontiercode_external.csv", "frontiercode", "Main score", "Harness", "Reasoning effort"),
-        ("deepswe_external.csv", "deepswe", "Pass@1", "Harness", "Reasoning effort"),
-        ("cursorbench_external.csv", "cursorbench", "Score", None, "Reasoning level"),
-        ("gso_external.csv", "gso", "Score OPT@1", "Scaffold", None),
-        ("algotune_external.csv", "algotune", "Score", None, None),
-        ("cybench_external.csv", "cybench", "Unguided % Solved", None, None),
-        ("exploitbench_external.csv", "exploitbench", "Mean capability", None, None),
+    # Each tuple: (csv_filename, benchmark_id, primary_score_col, fallback_score_col, harness_col, effort_col)
+    specs_map: list[tuple[str, str, str, str | None, str | None, str | None]] = [
+        ("mirrorcode.csv", "mirrorcode", "mean_score", None, None, None),
+        ("frontierswe_external.csv", "frontierswe", "Implementation", "Score", "Harness", None),
+        ("frontiercode_external.csv", "frontiercode", "Main score", None, "Harness", "Reasoning effort"),
+        ("deepswe_external.csv", "deepswe", "Pass@1", None, "Harness", "Reasoning effort"),
+        ("cursorbench_external.csv", "cursorbench", "Score", None, None, "Reasoning level"),
+        ("gso_external.csv", "gso", "Score OPT@1", None, "Scaffold", None),
+        ("algotune_external.csv", "algotune", "Score", None, None, None),
+        ("cybench_external.csv", "cybench", "Unguided % Solved", None, None, None),
+        ("exploitbench_external.csv", "exploitbench", "Mean capability", None, None, None),
     ]
 
     obs_list: list[Observation] = []
-    for filename, bench_id, score_col, harness_col, effort_col in specs_map:
+    for filename, bench_id, score_col, fallback_score_col, harness_col, effort_col in specs_map:
         if filename not in zf.namelist():
             continue
         rows = list(csv.DictReader(io.TextIOWrapper(zf.open(filename), encoding="utf-8")))
         for r in rows:
-            raw_ver = (r.get("Model version") or "").strip()
+            raw_ver = (r.get("Model version") or r.get("Name") or "").strip()
             raw_val_str = (r.get(score_col) or "").strip()
+            if not raw_val_str and fallback_score_col:
+                raw_val_str = (r.get(fallback_score_col) or "").strip()
             if not raw_ver or not raw_val_str:
                 continue
             try:
-                val = float(raw_val_str)
+                raw_num = float(raw_val_str)
             except ValueError:
                 continue
-            if val > 1.0:
-                val = val / 100.0
+
+            if bench_id == "algotune":
+                # AlgoTune reports speedup multipliers (e.g. 2.05x), never divide by 100
+                raw_display = f"{raw_num:.2f}×"
+                val = math.log(max(raw_num, 1.0)) / math.log(3.0)
+            else:
+                val = raw_num / 100.0 if raw_num > 1.0 else raw_num
+                raw_display = f"{val * 100:.1f}%"
+
             harness = (r.get(harness_col) or "").strip() or None if harness_col else None
             effort = (r.get(effort_col) or "").strip() or None if effort_col else None
+            eval_date = (r.get("Evaluation date") or "").strip() or None
+            row_url = _valid_http_url(r.get("Source link")) or _valid_http_url(r.get("Source"))
+
             cost_val = None
             if r.get("Cost per task"):
                 try:
@@ -302,21 +335,28 @@ def fetch_epoch_archive(
                     tok_val = float(r["Tokens per task"])
                 except ValueError:
                     pass
-            obs_list.append(
-                make_obs(
-                    norm,
-                    bench_id,
-                    raw_ver,
-                    val,
-                    f"{val * 100:.1f}%",
-                    org_hint=r.get("Organization"),
-                    harness=harness,
-                    effort=effort,
-                    date=(r.get("Release date") or "").strip() or None,
-                    cost_usd=cost_val,
-                    tokens=tok_val,
-                )
+
+            # Use true evaluation date when available instead of substituting model release dates
+            obs = make_obs(
+                norm,
+                bench_id,
+                raw_ver,
+                val,
+                raw_display,
+                org_hint=r.get("Organization"),
+                harness=harness,
+                effort=effort,
+                source_url=row_url,
+                date=eval_date,
+                cost_usd=cost_val,
+                tokens=tok_val,
             )
+            if bench_id == "cybench":
+                fam, stype = _classify_epoch_cybench_row(r, obs.organization)
+                if fam:
+                    obs.source_family = fam
+                obs.source_type = stype
+            obs_list.append(obs)
     return obs_list
 
 
@@ -326,7 +366,6 @@ def fetch_tbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observati
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
     obs_list: list[Observation] = []
-    # Table 1 holds the 54+ Terminal-Bench 4.1 model rows
     for tbl in tables:
         trs = tbl.find_all("tr")
         if len(trs) < 15:
@@ -361,11 +400,13 @@ def fetch_tbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observati
 
 
 def fetch_bughunt(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Parse Bug Hunt Bench native JSON (105 planted bugs across 2 production repos)."""
+    """Parse Bug Hunt Bench native JSON (excluding superseded partial runs)."""
     raw = json.loads(cached_text("https://bughunt.productcompass.pm/data/benchmark.json", refresh=refresh))
     planted = float(raw.get("meta", {}).get("planted_total", 105))
     obs_list: list[Observation] = []
     for r in raw.get("runs", []):
+        if r.get("superseded"):
+            continue
         model = (r.get("model") or "").strip()
         fixed = r.get("fixed")
         if not model or fixed is None:
@@ -391,7 +432,7 @@ def fetch_bughunt(norm: ModelNormalizer, refresh: bool = False) -> list[Observat
 
 
 def fetch_swe_rebench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Parse SWE-rebench SSR leaderboard table."""
+    """Parse SWE-rebench SSR leaderboard table, stripping developer SVG <title> tags."""
     html = cached_text("https://swe-rebench.com/", refresh=refresh)
     soup = BeautifulSoup(html, "html.parser")
     tbl = soup.find("table")
@@ -399,10 +440,20 @@ def fetch_swe_rebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obse
         return []
     obs_list: list[Observation] = []
     for tr in tbl.find_all("tr")[1:]:
-        cols = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
-        if len(cols) < 3:
+        tds = tr.find_all(["th", "td"])
+        if len(tds) < 3:
             continue
-        model_raw = cols[1]
+        cell = BeautifulSoup(str(tds[1]), "html.parser")
+        # SVG <title> prepends developer org name (causing e.g. 'Minimax MiniMax M3')
+        org_title_el = cell.find("svg").find("title") if cell.find("svg") else None
+        org_hint = org_title_el.get_text(strip=True) if org_title_el else None
+        for svg in cell.find_all("svg"):
+            svg.decompose()
+        model_raw = cell.get_text(" ", strip=True)
+        # Strip non-LLM wrapper words at end without losing model family
+        model_raw = re.sub(r"\s+(?:Model|Agent)$", "", model_raw, flags=re.I).strip()
+
+        cols = [c.get_text(" ", strip=True) for c in tds]
         rate, margin = parse_pct(cols[2])
         if rate is None:
             continue
@@ -415,6 +466,7 @@ def fetch_swe_rebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obse
                 model_raw,
                 rate,
                 cols[2],
+                org_hint=org_hint,
                 cost_usd=cost,
                 tokens=tokens,
                 margin=margin,
@@ -425,16 +477,16 @@ def fetch_swe_rebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obse
 
 def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
     """Parse Vals AI SSR HTML tables for SWE-bench, ProgramBench, Code Migration, IOI, Cyber, Terminal-Bench."""
-    pages = [
-        ("vals_swebench", "https://www.vals.ai/benchmarks/swebench"),
-        ("vals_programbench", "https://www.vals.ai/benchmarks/programbench"),
-        ("vals_code_migration", "https://www.vals.ai/benchmarks/code-migration-v1-1"),
-        ("vals_ioi", "https://www.vals.ai/benchmarks/ioi"),
-        ("vals_cyber", "https://www.vals.ai/benchmarks/cyber"),
-        ("vals_terminal_bench", "https://www.vals.ai/benchmarks/terminal-bench"),
+    pages: list[tuple[str, str, SourceType]] = [
+        ("vals_swebench", "https://www.vals.ai/benchmarks/swebench", "independent_run"),
+        ("vals_programbench", "https://www.vals.ai/benchmarks/programbench", "independent_run"),
+        ("vals_code_migration", "https://www.vals.ai/benchmarks/code-migration-v1-1", "benchmark_run"),
+        ("vals_ioi", "https://www.vals.ai/benchmarks/ioi", "benchmark_run"),
+        ("vals_cyber", "https://www.vals.ai/benchmarks/cyber", "benchmark_run"),
+        ("vals_terminal_bench", "https://www.vals.ai/benchmarks/terminal-bench", "independent_run"),
     ]
     obs_list: list[Observation] = []
-    for bench_id, url in pages:
+    for bench_id, url, stype in pages:
         html = cached_text(url, refresh=refresh)
         soup = BeautifulSoup(html, "html.parser")
         tbl = soup.find("table")
@@ -462,6 +514,7 @@ def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
                     rate,
                     score_str,
                     harness=harness,
+                    source_type=stype,
                     cost_usd=cost,
                     tokens=tokens,
                 )
@@ -470,7 +523,7 @@ def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
 
 
 def fetch_livesqlbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Parse LiveSQLBench-Base-Full SSR table from https://livesqlbench.ai/."""
+    """Parse LiveSQLBench-Base-Full v1 SSR table, distinguishing verified vs lab-reported badges."""
     html = cached_text("https://livesqlbench.ai/", refresh=refresh)
     soup = BeautifulSoup(html, "html.parser")
     tbl = soup.find("table")
@@ -478,25 +531,45 @@ def fetch_livesqlbench(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
         return []
     obs_list: list[Observation] = []
     for tr in tbl.find_all("tr")[1:]:
-        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
-        if len(cells) < 4:
+        tds = tr.find_all(["th", "td"])
+        if len(tds) < 4:
             continue
+        cells = [c.get_text(" ", strip=True) for c in tds]
         date_m = re.search(r"(\d{4}-\d{2}-\d{2})", cells[0])
         date = date_m.group(1) if date_m else None
-        model_raw = re.sub(r"\s*Reported\s+in.*$", "", cells[1], flags=re.I).strip()
+
+        badge_titles = " ".join(el.get("title", "") for el in tds[1].find_all(attrs={"title": True})).lower()
+        row_text_low = cells[1].lower()
+        model_raw = re.sub(r"\s*Reported\b.*$", "", cells[1], flags=re.I).strip()
         rate, _ = parse_pct(cells[3])
         if not model_raw or rate is None:
             continue
+
+        row_link_el = tds[1].find("a", href=True)
+        row_url = _valid_http_url(row_link_el["href"]) if row_link_el else None
         cost = parse_cost(cells[4]) if len(cells) > 4 else None
-        stype: SourceType = "lab_reported" if "reported in" in cells[1].lower() else "benchmark_run"
+        submitter_org = cells[2] if len(cells) > 2 else None
+
+        if "officially reported" in badge_titles or "reported i" in row_text_low or "reported in" in row_text_low:
+            stype: SourceType = "lab_reported"
+            obs_family: str | None = infer_organization(model_raw, submitter_org)
+        elif "verified by the bird team" in badge_titles:
+            stype = "benchmark_run"
+            obs_family = "HKU BIRD / LiveSQLBench"
+        else:
+            stype = "third_party"
+            obs_family = submitter_org or "LiveSQLBench Submitters"
+
         obs = make_obs(
             norm,
             "livesqlbench",
             model_raw,
             rate,
             f"{rate * 100:.2f}%",
-            org_hint=cells[2] if len(cells) > 2 else None,
+            org_hint=submitter_org,
+            source_family=obs_family if obs_family != "Other" else None,
             source_type=stype,
+            source_url=row_url,
             date=date,
             cost_usd=cost,
         )
@@ -507,9 +580,25 @@ def fetch_livesqlbench(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
 
 
 def fetch_scale_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Fetch latest ActionTech SCALE SQL evaluation report from GitHub."""
-    # Check 2026-06 (and could inspect directory dynamically; 2026-06 was verified latest)
-    url = "https://raw.githubusercontent.com/actiontech/sql-llm-benchmark/main/leaderboard/public/data/eval_reports/models-2026-06.json"
+    """Discover and fetch the latest ActionTech SCALE SQL evaluation report from GitHub."""
+    fallback_file = "models-2026-06.json"
+    latest_file = fallback_file
+    try:
+        dir_url = "https://api.github.com/repos/actiontech/sql-llm-benchmark/contents/leaderboard/public/data/eval_reports"
+        entries = json.loads(cached_text(dir_url, refresh=refresh))
+        candidates = sorted(
+            e["name"]
+            for e in entries
+            if isinstance(e, dict) and re.match(r"^models-\d{4}-\d{2}\.json$", e.get("name", ""))
+        )
+        if candidates:
+            latest_file = candidates[-1]
+    except Exception:
+        pass
+
+    month_m = re.search(r"(\d{4}-\d{2})", latest_file)
+    report_month = month_m.group(1) if month_m else "2026-06"
+    url = f"https://raw.githubusercontent.com/actiontech/sql-llm-benchmark/main/leaderboard/public/data/eval_reports/{latest_file}"
     data = json.loads(cached_text(url, refresh=refresh))
     obs_list: list[Observation] = []
     sub_map = {
@@ -524,7 +613,6 @@ def fetch_scale_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Observ
         mtype = (m.get("type") or "").lower()
         is_app = "application" in mtype
         scores = m.get("scores") or {}
-        rel_date = (m.get("releaseDate") or "").replace("/", "-") or None
         for skey, bench_id in sub_map.items():
             sub = scores.get(skey)
             if not sub or sub.get("ability_score") is None:
@@ -537,7 +625,8 @@ def fetch_scale_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Observ
                 val,
                 f"{sub['ability_score']:.1f}%",
                 org_hint=m.get("organization"),
-                date=rel_date,
+                source_url=url,
+                date=report_month,
             )
             if is_app:
                 obs.is_agent_product = True
@@ -546,27 +635,45 @@ def fetch_scale_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Observ
 
 
 def fetch_spider2(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Parse Spider 2.0 Snow / DBT / Lite static HTML tables."""
+    """Parse Spider 2.0 Snow / DBT / Lite tables cleanly separating .affiliation tags from models."""
     html = cached_text("https://spider2-sql.github.io/", refresh=refresh)
     soup = BeautifulSoup(html, "html.parser")
     tables = soup.find_all("table")
-    # Table 1: Snow, Table 2: DBT, Table 3: Lite
     table_map = [(1, "spider2_snow"), (2, "spider2_dbt"), (3, "spider2_lite")]
     obs_list: list[Observation] = []
     for idx, bench_id in table_map:
         if idx >= len(tables):
             continue
         for tr in tables[idx].find_all("tr")[1:]:
-            cols = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
-            if len(cols) < 3:
+            tds = tr.find_all(["th", "td"])
+            if len(tds) < 3:
                 continue
-            method_raw = cols[1]
-            rate, _ = parse_pct(cols[2])
-            if rate is None:
+            cell = BeautifulSoup(str(tds[1]), "html.parser")
+            aff_el = cell.select_one(".affiliation")
+            aff_text = aff_el.get_text(" ", strip=True) if aff_el else None
+            aff_link_el = aff_el.find("a", href=True) if aff_el else None
+            aff_url = _valid_http_url(aff_link_el["href"]) if aff_link_el else None
+            if aff_el:
+                aff_el.decompose()
+
+            method_raw = re.sub(r"\s+", " ", cell.get_text(" ", strip=True)).strip()
+            score_text = tds[2].get_text(" ", strip=True)
+            rate, _ = parse_pct(score_text)
+            if not method_raw or rate is None:
                 continue
-            # Clean trailing citations/org words when "+ Model" exists
-            obs = make_obs(norm, bench_id, method_raw, rate, f"{rate * 100:.2f}%")
-            # In Spider2, entries without "+" and without a known LLM keyword are standalone products
+
+            stype: SourceType = "benchmark_run" if not aff_text or "xlang" in aff_text.lower() else "third_party"
+            fam = aff_text if aff_text and "xlang" not in aff_text.lower() else None
+            obs = make_obs(
+                norm,
+                bench_id,
+                method_raw,
+                rate,
+                f"{rate * 100:.2f}%",
+                source_family=fam,
+                source_type=stype,
+                source_url=aff_url,
+            )
             if "+" not in method_raw and infer_organization(obs.display_name) == "Other":
                 obs.is_agent_product = True
             obs_list.append(obs)
@@ -635,12 +742,11 @@ def fetch_compilebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
 
 
 def fetch_multiswebench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Fetch Multi-SWE-bench 8-language Verified overall aggregate results."""
+    """Fetch Multi-SWE-bench 8-language Verified aggregate results."""
     url = "https://raw.githubusercontent.com/multi-swe-bench/experiments/refs/heads/dist/leaderboard.json"
     data = json.loads(cached_text(url, refresh=refresh))
 
     per_model_lang: dict[str, dict[str, tuple[float, str | None, str | None]]] = {}
-
     for lang_block in data:
         lang = lang_block.get("name", "")
         for board in lang_block.get("data", []):
@@ -672,7 +778,9 @@ def fetch_multiswebench(norm: ModelNormalizer, refresh: bool = False) -> list[Ob
                     "multi_swe_bench",
                     cid,
                     avg,
-                    f"{avg * 100:.1f}% ({len(vals)} langs)",
+                    f"{avg * 100:.1f}% ({len(vals)} langs · multi-harness)",
+                    harness="Multi-harness best",
+                    source_url=url,
                     date=latest_date or None,
                 )
             )
@@ -709,8 +817,183 @@ def fetch_aider_polyglot(norm: ModelNormalizer, refresh: bool = False) -> list[O
     return obs_list
 
 
+def fetch_gso(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch official GSO Opt@1 results from gso-bench.github.io/assets/leaderboard.json."""
+    url = "https://gso-bench.github.io/assets/leaderboard.json"
+    data = json.loads(cached_text(url, refresh=refresh))
+    obs_list: list[Observation] = []
+    for r in data.get("models", []):
+        if (r.get("setting") or "Opt@1").lower() != "opt@1":
+            continue
+        name = (r.get("name") or "").strip()
+        raw_score = r.get("score")
+        if not name or raw_score is None:
+            continue
+        val = float(raw_score) / 100.0 if float(raw_score) > 1.0 else float(raw_score)
+        sub_org = (r.get("submission_org_name") or "GSO").strip()
+        sub_url = _valid_http_url(r.get("submission_org_url"))
+        stype: SourceType = "benchmark_run" if sub_org.lower() == "gso" else "independent_run"
+        obs_list.append(
+            make_obs(
+                norm,
+                "gso",
+                name,
+                val,
+                f"{val * 100:.1f}%",
+                org_hint=r.get("model_org"),
+                harness=r.get("scaffold"),
+                effort=r.get("reasoning_effort"),
+                source_family=sub_org,
+                source_type=stype,
+                source_url=sub_url or url,
+                date=r.get("date"),
+            )
+        )
+    return obs_list
+
+
+def fetch_cybench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch official Cybench CSV and parse superscript footnote provenance from cybench.github.io."""
+    sup_to_num = str.maketrans("¹²³⁴⁵⁶⁷⁸⁹⁰", "1234567890")
+    html = cached_text("https://cybench.github.io/", refresh=refresh)
+    soup = BeautifulSoup(html, "html.parser")
+    footnote_map: dict[str, tuple[str | None, SourceType, str | None]] = {}
+    for el in soup.find_all(["p", "li", "div"]):
+        txt = el.get_text(" ", strip=True)
+        if not txt or len(txt) > 300:
+            continue
+        m = re.match(r"^([¹²³⁴⁵⁶⁷⁸⁹⁰]+)\s*(.+)$", txt)
+        if not m:
+            continue
+        fnum = m.group(1).translate(sup_to_num)
+        desc = m.group(2).lower()
+        link_el = el.find("a", href=True)
+        link = _valid_http_url(link_el["href"]) if link_el else None
+        if "hal" in desc:
+            footnote_map[fnum] = ("HAL", "independent_run", link)
+        elif any(k in desc for k in ("claude", "opus", "sonnet", "mythos", "anthropic")):
+            footnote_map[fnum] = ("Anthropic", "lab_reported", link)
+        elif "grok" in desc or "xai" in desc:
+            footnote_map[fnum] = ("xAI", "lab_reported", link)
+        elif "muse" in desc or "meta" in desc:
+            footnote_map[fnum] = ("Meta", "lab_reported", link)
+
+    csv_url = "https://cybench.github.io/data/leaderboard.csv"
+    csv_text = cached_text(csv_url, refresh=refresh)
+    obs_list: list[Observation] = []
+    for row in csv.DictReader(io.StringIO(csv_text)):
+        raw_model = (row.get("Model") or "").strip()
+        rate, _ = parse_pct(row.get("End-to-End % Solved") or "")
+        if not raw_model or rate is None:
+            continue
+        fnum_m = re.search(r"([¹²³⁴⁵⁶⁷⁸⁹⁰]+)\s*$", raw_model)
+        fnum = fnum_m.group(1).translate(sup_to_num) if fnum_m else None
+        clean_model = re.sub(r"\s*[¹²³⁴⁵⁶⁷⁸⁹⁰]+\s*$", "", raw_model).strip()
+        fam, stype, flink = footnote_map.get(fnum, ("Cybench", "benchmark_run", csv_url))
+        obs_list.append(
+            make_obs(
+                norm,
+                "cybench",
+                clean_model,
+                rate,
+                f"{rate * 100:.1f}%",
+                source_family=fam,
+                source_type=stype,
+                source_url=flink or csv_url,
+            )
+        )
+    return obs_list
+
+
+def fetch_cybergym(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch official CyberGym Level-1 (trials=1, focus=model) JSON with true vendor provenance."""
+    url = "https://www.cybergym.io/assets/data/cybergym.json"
+    data = json.loads(cached_text(url, refresh=refresh))
+    obs_list: list[Observation] = []
+    for r in data.get("level1", []):
+        if r.get("focus") != "model" or (r.get("trials") or 1) != 1:
+            continue
+        raw_model = (r.get("model") or "").strip()
+        if not raw_model or "finetuned from" in raw_model.lower():
+            continue
+        score = r.get("score_10")
+        if score is None:
+            continue
+        val = float(score)
+        src_raw = (r.get("source") or "CyberGym Team").strip()
+        obs = make_obs(
+            norm,
+            "cybergym",
+            raw_model,
+            val,
+            f"{val * 100:.1f}%",
+            harness=r.get("agent"),
+            source_url=_valid_http_url(r.get("source_url")) or url,
+            date=r.get("date"),
+        )
+        if src_raw.lower() == "cybergym team":
+            obs.source_family = "CyberGym Team"
+            obs.source_type = "benchmark_run"
+        else:
+            src_org = infer_organization("", src_raw)
+            src_family = src_org if src_org != "Other" else src_raw
+            obs.source_family = src_family
+            obs.source_type = "lab_reported" if src_family == obs.organization else "third_party"
+        obs_list.append(obs)
+    return obs_list
+
+
+def fetch_bfcl(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch official Berkeley BFCL overall CSV from gorilla.cs.berkeley.edu/data_overall.csv."""
+    url = "https://gorilla.cs.berkeley.edu/data_overall.csv"
+    text = cached_text(url, refresh=refresh)
+    obs_list: list[Observation] = []
+    for row in csv.DictReader(io.StringIO(text)):
+        raw_model = (row.get("Model") or "").strip()
+        rate, _ = parse_pct(row.get("Overall Acc") or "")
+        if not raw_model or rate is None:
+            continue
+        mode_m = re.search(r"\((FC(?:\s+CoT|\s+thinking)?|Prompt(?:\s+CoT)?)\)\s*$", raw_model, re.I)
+        mode_tag = mode_m.group(1) if mode_m else None
+        clean_model = raw_model[: mode_m.start()].strip() if mode_m else raw_model
+        cost = parse_cost(row.get("Total Cost ($)") or "")
+        obs_list.append(
+            make_obs(
+                norm,
+                "bfcl_v4",
+                clean_model,
+                rate,
+                f"{rate * 100:.2f}%",
+                org_hint=row.get("Organization"),
+                harness=f"BFCL ({mode_tag})" if mode_tag else "BFCL",
+                source_url=_valid_http_url(row.get("Model Link")) or url,
+                cost_usd=cost,
+            )
+        )
+    return obs_list
+
+
+def _parse_benchlm_provenance(
+    who_text: str, default_family: str, default_type: SourceType
+) -> tuple[str, SourceType]:
+    """Infer true evaluator family and provenance type from BenchLM's Who column."""
+    low = who_text.lower()
+    if "reported by" in low and "meta ai (comparison" not in low:
+        after = re.split(r"reported by\s+", who_text, flags=re.I)[-1].strip()
+        vendor = re.split(r"[,(;·]", after)[0].strip()
+        org = infer_organization("", vendor)
+        return (org if org != "Other" else (vendor or default_family)), "lab_reported"
+    if any(k in low for k in ("third party", "comparison table", "upstream", "carried from")):
+        return default_family, "third_party"
+    if "run by" in low:
+        return default_family, "benchmark_run"
+    if "independent" in low:
+        return default_family, "independent_run"
+    return default_family, default_type
+
+
 def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Fetch recent Nov 2026 tracks referenced on BenchLM (SWE-bench Pro, Scale SWE-Atlas, etc.)."""
+    """Fetch Scale SWE-Atlas, SWE-bench Pro, SWE-bench Multilingual, NL2Repo, MCP Atlas via BenchLM."""
     slugs = [
         ("swe_bench_pro", "https://benchlm.ai/benchmarks/swe-bench-pro"),
         ("swe_bench_multilingual", "https://benchlm.ai/benchmarks/swe-bench-multilingual"),
@@ -719,11 +1002,10 @@ def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> l
         ("scale_swe_atlas_qna", "https://benchlm.ai/benchmarks/scale-swe-atlas-qna"),
         ("nl2repo", "https://benchlm.ai/benchmarks/nl2repo"),
         ("mcpatlas", "https://benchlm.ai/benchmarks/mcpatlas"),
-        ("bfcl_v4", "https://benchlm.ai/benchmarks/bfcl-v4"),
-        ("cybergym", "https://benchlm.ai/benchmarks/cybergym"),
     ]
     obs_list: list[Observation] = []
     for bench_id, url in slugs:
+        spec = BENCHMARK_REGISTRY[bench_id]
         html = cached_text(url, refresh=refresh)
         soup = BeautifulSoup(html, "html.parser")
         tbl = soup.find("table")
@@ -735,7 +1017,6 @@ def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> l
             cells = tr.find_all(["th", "td"])
             if len(cells) < 3:
                 continue
-            # First <a> or <span> contains only the model name without appended provider/provenance spans
             first_node = cells[1].find(["a", "span"])
             model_name = (
                 first_node.get_text(" ", strip=True)
@@ -751,18 +1032,10 @@ def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> l
                 cells[3].get_text(" ", strip=True)
                 if has_who_col and len(cells) > 3
                 else cells[1].get_text(" ", strip=True)
-            ).lower()
-            if "reported by" in who_text and "meta ai (comparison" not in who_text:
-                stype: SourceType = "lab_reported"
-            elif "third party" in who_text or "comparison table" in who_text or "upstream" in who_text or "carried from" in who_text:
-                stype = "third_party"
-            elif "run by" in who_text:
-                stype = "benchmark_run"
-            elif "independent" in who_text:
-                stype = "independent_run"
-            else:
-                stype = BENCHMARK_REGISTRY[bench_id].default_source_type
+            )
+            fam, stype = _parse_benchlm_provenance(who_text, spec.source_family, spec.default_source_type)
 
+            # BenchLM mirror pages do not reliably carry per-run evaluation dates
             obs_list.append(
                 make_obs(
                     norm,
@@ -770,8 +1043,10 @@ def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> l
                     model_name,
                     rate,
                     score_str,
+                    source_family=fam,
                     source_type=stype,
-                    date="2026-11-21",
+                    source_url=url,
+                    date=None,
                 )
             )
     return obs_list

@@ -1,8 +1,8 @@
 # Backend.Index — 独立后端工程代码大模型排行榜
 
-**Backend.Index** 是一个面向真实软件工程与后端开发场景的独立大模型评测索引与证据溯源平台。项目通过 Python 数据管道聚合全球 **14** 个公开权威榜单源、**40** 项后端与系统工程基准测试（涵盖仓库级修复、系统构建运维、Text-to-SQL、性能内核优化、架构重构与后端安全等方向），采用 **2PL 题目反应理论（2PL IRT）** 校准能力分与 `90% CI` 不确定性区间，并在 Next.js 前端中提供透明的证据链回溯与多模型对比分析。
+**Backend.Index** 是一个面向真实软件工程与后端开发场景的独立大模型评测索引与证据溯源平台。项目通过 Python 数据管道聚合全球 **18** 个公开上游源、**40** 项后端与系统工程基准测试（其中 37 项参与 2PL IRT 校准、3 项为外部/原始倍数对照参考，涵盖仓库级研发、系统重建与演进、运维与工具协议、Text-to-SQL、性能与算法及后端安全），并结合 `90% CI` 不确定性区间与可追溯 Evidence Ledger 提供直观评测看板与多模型对比分析。
 
-> 当前数据快照（`BackendIndex-2PL-IRT-v2.0`，生成时间 `2026-11-22T17:50:43Z`）：共收录 **135** 个入榜模型（`93 Supported` / `42 Estimated`）、**40** 项计分基准与 **1,857** 条评测观测记录。
+> 当前数据快照（`BackendIndex-2PL-IRT-v2.1`，生成时间 `2026-11-23T03:31:09Z`）：共收录 **124** 个入榜模型（`85 Supported` / `39 Estimated`）、**40** 项追踪基准与 **1,940** 条原始评测观测记录。
 
 ---
 
@@ -25,25 +25,25 @@
 
 | 维度 ID | 中文名称 | English | 默认权重 | 评测侧重点 |
 | :--- | :--- | :--- | :---: | :--- |
-| `repo` | 仓库研发 | Repo Engineering | **25%** | 多文件大型仓库 Bug 定位、真实 Issue 修复与端到端补丁合入（SWE-rebench v2、FrontierSWE、Bug Hunt Bench 等） |
-| `systems` | 运维构建与 SRE | Systems, DevOps & SRE | **20%** | 容器终端排错、复杂构建工具链、OpenTelemetry 可观测性与工具协议（Terminal-Bench 4.1、CompileBench、OTelBench 等） |
-| `architecture` | 架构与构建 | Architecture & Build | **15%** | 跨模块代码库问答、安全重构、单元测试编写、遗产代码迁移与从零系统重建（SWE-Atlas、RefactoringBench 等） |
-| `sql` | 数据库 SQL | Database & SQL | **15%** | 企业宽表 Text-to-SQL、执行优化、SQL 方言迁移与查询分析（Spider 2.0、LiveSQLBench、SCALE SQL 等） |
-| `performance` | 性能与算法 | Performance & Algorithms | **15%** | 运行时性能优化、算法竞赛内核与综合编码能力（LiveCodeBench、BigCodeBench、AlgoTune 等） |
-| `security` | 后端安全 | Backend Security | **10%** | CVE PoC 复现与自动补丁、渗透对抗与系统安全攻防（CyberGym、Cybench、ExploitBench 等） |
+| `repo` | 仓库研发 | Repo Engineering | **25%** | 已有代码库理解（SWE-Atlas QnA）、缺陷定位修复、单测补全（Test Writing）与多文件补丁交付（SWE-rebench、FrontierSWE Implementation、Bug Hunt Bench 等） |
+| `systems` | 运维构建与 SRE | Systems, DevOps & SRE | **20%** | 容器终端排错、复杂构建工具链、OpenTelemetry 可观测性与结构化工具协议（Terminal-Bench、CompileBench、OTelBench、MCP Atlas、BFCL v4 等） |
+| `architecture` | 系统重建与演进 | Architecture & Evolution | **15%** | 跨文件架构重构（Refactoring）、跨语言迁移（Code Migration）与无源码系统重建（ProgramBench、MirrorCode、NL2Repo） |
+| `sql` | 数据库 SQL | Database & SQL | **15%** | 企业宽表 Text-to-SQL、能力分优化评估（ability_score）、SQL 方言迁移与 DBT 建模（Spider 2.0、LiveSQLBench、SCALE SQL 等） |
+| `performance` | 性能与算法 | Performance & Algorithms | **15%** | 真实仓库代码运行时性能优化与竞赛级算法复杂度求解（GSO Opt@1、Vals IOI v2；AlgoTune 原始倍数对照） |
+| `security` | 后端安全 | Backend Security | **10%** | 历史漏洞 PoC 复现与修复、无引导渗透 CTF 与阶段性利用能力（CyberGym Level-1、Cybench、Vals Cyber、ExploitBench 等） |
 
 ---
 
 ## 评分方法与防污染机制
 
 1. **Category-First 2PL IRT 校准**（[irt_scorer.py](pipeline/irt_scorer.py)）
-   - 先在同一模型与基准的多次提交中优先保留独立评测运行（`benchmark_run` / `independent_run`），再按维度以纯 NumPy 拟合两参数 IRT 模型，联合估算基准区分度 `a`、难度 `b` 及模型潜在能力 `θ`，最终映射至 `0–100` 校准刻度。
+   - 先在同一模型与基准的多次提交中优先保留独立评测运行（`benchmark_run` / `independent_run`），再分两轮按维度以纯 NumPy 拟合两参数 IRT 模型并通过共有模型锚点统一对齐到 `repo` 标尺，输出 `0–100` 校准刻度。
 2. **90% 置信区间与缺测惩罚（`90% CI`）**
-   - 每个固定分数旁标注的区间（如 `86–100`）并非单次最好/最差成绩，而是统计意义上的 **90% 置信区间**（`overall ± 1.645 × overall_se`，截断至 `[0, 100]`），其中 `overall_se = sqrt(base_se² + (missing_weight × 6.5)²)`。未实测维度越多或基准覆盖越少，置信区间越宽。
-3. **来源折算与 40% 单机构封顶**（[config.py](pipeline/config.py)）
-   - 官方实验室自报或第三方转发权重为 `0.72`，独立基准运行为 `1.00`；较早期榜单（`aging`）时效系数为 `0.55`。当某模型涵盖至少 3 个评测来源家族时，单一家族的贡献上限被限制在 **40%**。
-4. **`Supported` / `Estimated` 状态与 2 分近距护栏**
-   - 满足「≥ 2 个独立第三方家族 + ≥ 2 个维度（且必含 `repo`）+ ≥ 4 项不同基准」的模型标记为 `Supported`，否则为 `Estimated`；且仅由单个独立家族支撑的 `Estimated` 模型在综合榜上若领先下一名不超过 `2.0` 分，会被动态后移，防止单榜刷分冲榜。
+   - 每个固定分数旁标注的区间（如 `82–100`）并非单次最好/最差成绩，而是统计意义上的 **90% 置信区间**（`overall ± 1.645 × overall_se`，截断至 `[0, 100]`），其中 `overall_se = sqrt(base_se² + (missing_weight × 6.5)²)`。未实测维度越多或基准覆盖越少，置信区间越宽。
+3. **来源折算、同题拆权与家族封顶**（[config.py](pipeline/config.py)）
+   - 实验室自报或第三方转引权重为 `0.72`，独立基准/维护方实测为 `1.00`；较早期历史榜单（`aging`）时效系数为 `0.55`；共有同底层题集的子榜（如 Spider 2.0 Snow/Lite）按同题族折权；在多家族场景下通过迭代归一化严格将单一评测家族占比限制在 **40%–45%** 以内。
+4. **核心工程门槛（`Supported` / `Estimated`）与 2 分近距护栏**
+   - 仅当模型在**核心工程基准（`core=True`）**上满足「≥ 2 个独立家族 + ≥ 2 个维度（且必含 `repo` 核心工程）+ ≥ 4 项不同核心基准」时方可标记 `Supported`，辅助项目（Exercism 练习、纯工具调用、算法竞赛）不单独授予核心资格；单家族支撑的 `Estimated` 模型落后 2 分护栏继续生效。
 
 ---
 

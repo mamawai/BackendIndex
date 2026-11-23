@@ -39,7 +39,7 @@ def deduplicate_observations(
     observations: list[Observation],
     category: CategoryId,
 ) -> dict[tuple[str, str], Observation]:
-    """Select best verified run per (model_id, benchmark_id) and enforce 40% family cap."""
+    """Select best verified run per (model_id, benchmark_id) for a scored category."""
     by_pair: dict[tuple[str, str], list[Observation]] = {}
     for obs in observations:
         if obs.is_agent_product or obs.category != category:
@@ -52,7 +52,7 @@ def deduplicate_observations(
     best_by_pair: dict[tuple[str, str], Observation] = {}
     for pair, runs in by_pair.items():
         # Prefer independent/benchmark-run over lab-reported when choosing representative run,
-        # then highest raw score (or most recent date).
+        # then highest raw score, then latest verified evaluation date.
         best = max(
             runs,
             key=lambda r: (
@@ -69,31 +69,63 @@ def deduplicate_observations(
 def compute_effective_weights(
     best_by_pair: dict[tuple[str, str], Observation],
 ) -> dict[tuple[str, str], float]:
-    """Compute provenance + freshness weights with a 40% single-evaluator family cap."""
+    """Compute provenance + freshness weights, split shared-question overlaps, and apply family caps."""
     raw_weights: dict[tuple[str, str], float] = {}
-    per_model_family: dict[str, dict[str, float]] = {}
+    per_model_overlap: dict[tuple[str, str], int] = {}
 
     for (mid, bid), obs in best_by_pair.items():
         spec = BENCHMARK_REGISTRY[bid]
         w = spec.base_weight * SOURCE_TYPE_WEIGHTS[obs.source_type] * FRESHNESS_MULTIPLIER[spec.freshness]
         raw_weights[(mid, bid)] = w
-        fam_map = per_model_family.setdefault(mid, {})
-        fam_map[obs.source_family] = fam_map.get(obs.source_family, 0.0) + w
+        if spec.overlap_group:
+            key = (mid, spec.overlap_group)
+            per_model_overlap[key] = per_model_overlap.get(key, 0) + 1
 
-    # Cap any single source_family at <= 40% of a model's total weight when >= 3 families exist
-    capped_weights: dict[tuple[str, str], float] = {}
-    for (mid, bid), w in raw_weights.items():
-        obs = best_by_pair[(mid, bid)]
-        fam_map = per_model_family[mid]
-        if len(fam_map) >= 3:
-            total_w = sum(fam_map.values())
-            fam_w = fam_map[obs.source_family]
-            other_w = total_w - fam_w
-            if other_w > 0 and fam_w / total_w > 0.40:
-                max_fam_w = (0.40 / 0.60) * other_w
-                scale = max_fam_w / fam_w
-                w = w * scale
-        capped_weights[(mid, bid)] = w
+    # Split weights across benchmarks sharing an identical underlying question set (e.g. Spider2 Snow/Lite)
+    overlap_adjusted: dict[tuple[str, str], float] = {}
+    per_model_pairs: dict[str, list[tuple[str, str]]] = {}
+    for pair in raw_weights:
+        mid, bid = pair
+        spec = BENCHMARK_REGISTRY[bid]
+        w = raw_weights[pair]
+        if spec.overlap_group:
+            cnt = per_model_overlap[(mid, spec.overlap_group)]
+            if cnt > 1:
+                w = w / cnt
+        overlap_adjusted[pair] = w
+        per_model_pairs.setdefault(mid, []).append(pair)
+
+    # Iteratively enforce per-family weight caps using the normalized total denominator:
+    # cap=0.40 when >=4 evaluator families are present; cap=0.45 for 3 families to avoid inflating weak 3rd entries.
+    capped_weights = dict(overlap_adjusted)
+    for _mid, pairs in per_model_pairs.items():
+        fam_totals: dict[str, float] = {}
+        for pair in pairs:
+            fam = best_by_pair[pair].source_family
+            fam_totals[fam] = fam_totals.get(fam, 0.0) + capped_weights[pair]
+
+        n_fams = len(fam_totals)
+        if n_fams < 3:
+            continue
+        cap = 0.40 if n_fams >= 4 else 0.45
+
+        for _ in range(25):
+            total_w = sum(fam_totals.values())
+            if total_w <= 0:
+                break
+            changed = False
+            for fam, fam_w in list(fam_totals.items()):
+                other_w = total_w - fam_w
+                if other_w > 0 and (fam_w / total_w) > cap + 1e-6:
+                    target_fam_w = (cap / (1.0 - cap)) * other_w
+                    scale = target_fam_w / fam_w
+                    fam_totals[fam] = fam_w * scale
+                    for pair in pairs:
+                        if best_by_pair[pair].source_family == fam:
+                            capped_weights[pair] *= scale
+                    changed = True
+            if not changed:
+                break
 
     return capped_weights
 
@@ -136,7 +168,6 @@ def fit_category_irt(
         W[i, j] = eff_weights[(mid, bid)]
         obs_counts[mid] += 1
 
-    # Initialize theta from average logit centered across models; difficulty from negative logit mean
     theta = np.zeros(n_m, dtype=np.float64)
     prior_mu = np.array(
         [general_theta_prior.get(mid, 0.0) if general_theta_prior else 0.0 for mid in valid_models],
@@ -147,15 +178,13 @@ def fit_category_irt(
     for j in range(n_b):
         mask = W[:, j] > 0
         if np.any(mask):
-            mean_y = np.average(Y[mask, j], weights=W[mask, j])
+            mean_y = np.average(Y[mask, j], weights=W[:, j][mask])
             d[j] = -math.log(mean_y / (1.0 - mean_y))
 
     lam_theta = 0.14
     lam_d = 0.08
     lam_log_a = 1.2
 
-    # Alternating Newton-Raphson updates for theta, d, and log(a)
-    # Only subtract mu_ref inside the loop (exact shift invariance); scale once after convergence.
     ref_mask = np.array([obs_counts[mid] >= 2 for mid in valid_models])
     if np.sum(ref_mask) < 4:
         ref_mask = np.ones(n_m, dtype=bool)
@@ -196,19 +225,16 @@ def fit_category_irt(
             log_a = float(np.clip(log_a + np.clip(grad / max(hess, 1e-6), -0.25, 0.25), math.log(0.45), math.log(2.6)))
             a[j] = math.exp(log_a)
 
-        # Shift-center only so a*(theta - d) remains strictly invariant
         mu_ref = float(np.mean(theta[ref_mask]))
         theta = theta - mu_ref
         d = d - mu_ref
 
-    # Standardize onto reference cohort after convergence
     mu_ref = float(np.mean(theta[ref_mask]))
     sd_ref = max(float(np.std(theta[ref_mask])), 0.35)
     theta_std = (theta - mu_ref) / sd_ref
     d_std = (d - mu_ref) / sd_ref
     a_std = a * sd_ref
 
-    # Compute Fisher information & map to intuitive 0-100 calibrated scale
     ALPHA = 0.88
     BETA = 0.35
 
@@ -221,23 +247,21 @@ def fit_category_irt(
         p = sigmoid(a[mask] * (theta[i] - d[mask]))
         info = lam_theta + float(np.sum(W[i, mask] * (a[mask] ** 2) * p * (1.0 - p)))
         se_theta = (1.0 / math.sqrt(max(info, 0.1))) / sd_ref
-
         s = float(sigmoid(ALPHA * theta_std[i] + BETA))
         score_100 = round(s * 100.0, 2)
         se_100 = round(100.0 * ALPHA * s * (1.0 - s) * se_theta, 2)
 
         model_scores[mid] = score_100
-        model_se[mid] = se_100
-        model_theta[mid] = round(float(theta_std[i]), 4)
+        model_se[mid] = max(se_100, 1.5)
+        model_theta[mid] = round(float(theta_std[i]), 3)
 
-    bench_params = {
-        bid: {
-            "difficulty": round(float(d_std[b_idx[bid]]), 3),
-            "discrimination": round(float(a_std[b_idx[bid]]), 3),
-            "n_models": int(np.sum(W[:, b_idx[bid]] > 0)),
+    bparams: dict[str, dict[str, float]] = {}
+    for j, bid in enumerate(valid_benchmarks):
+        bparams[bid] = {
+            "difficulty": round(float(d_std[j]), 3),
+            "discrimination": round(float(a_std[j]), 3),
+            "n_models": int(np.sum(W[:, j] > 0)),
         }
-        for bid in valid_benchmarks
-    }
 
     return CategoryCalibration(
         category=category,
@@ -245,29 +269,33 @@ def fit_category_irt(
         model_se=model_se,
         model_theta=model_theta,
         model_obs_count=obs_counts,
-        benchmark_params=bench_params,
+        benchmark_params=bparams,
     )
 
 
 def score_all_models(
     observations: list[Observation],
-    category_weights: dict[CategoryId, float] | None = None,
+    weights: dict[CategoryId, float] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], dict[CategoryId, CategoryCalibration]]:
-    """Run two-pass category 2PL IRT (pass 1 -> general prior -> pass 2) and combine Overall."""
-    weights = category_weights or CATEGORY_WEIGHTS
-    categories: list[CategoryId] = list(weights.keys())
+    """Run two-pass category 2PL IRT (pass 1 -> general prior -> pass 2), align onto repo, and score Overall."""
+    cat_weights = weights or CATEGORY_WEIGHTS
+    categories: list[CategoryId] = list(cat_weights.keys())
+    clean_obs = [o for o in observations if not o.is_agent_product]
 
-    # Pass 1: independent per-category IRT to obtain rough general ability prior
-    pass1 = {c: fit_category_irt(observations, c) for c in categories}
+    # Pass 1: independent per-category IRT to obtain cross-category latent prior
+    pass1 = {c: fit_category_irt(clean_obs, c) for c in categories}
     general_prior: dict[str, float] = {}
-    all_mids = {mid for cal in pass1.values() for mid in cal.model_theta}
-    for mid in all_mids:
+    all_p1_mids = {mid for cal in pass1.values() for mid in cal.model_theta}
+    for mid in all_p1_mids:
         vals = [pass1[c].model_theta[mid] for c in categories if mid in pass1[c].model_theta]
         if vals:
             general_prior[mid] = float(np.mean(vals))
 
-    # Pass 2: category-first 2PL IRT shrunk gently toward general ability when observations are sparse
-    calibrations = {c: fit_category_irt(observations, c, general_theta_prior=general_prior) for c in categories}
+    # Pass 2: category-first 2PL IRT gently regularized toward general latent ability
+    calibrations: dict[CategoryId, CategoryCalibration] = {
+        cat: fit_category_irt(clean_obs, cat, general_theta_prior=general_prior)
+        for cat in categories
+    }
 
     # Cross-category shared-anchor alignment onto the deepest category ("repo") scale
     ALPHA = 0.88
@@ -289,78 +317,92 @@ def score_all_models(
                     aligned_theta = (cal.model_theta[mid] - mu_c) * ratio + mu_a
                     cal.model_theta[mid] = round(aligned_theta, 4)
                     s_old = cal.model_scores[mid] / 100.0
-                    # Recover se_theta from previous SE, scale by ratio, and remap score
                     denom = max(100.0 * ALPHA * s_old * (1.0 - s_old), 1e-3)
                     se_theta = (cal.model_se[mid] / denom) * ratio
                     s_new = float(sigmoid(ALPHA * aligned_theta + BETA))
                     cal.model_scores[mid] = round(s_new * 100.0, 2)
-                    cal.model_se[mid] = round(100.0 * ALPHA * s_new * (1.0 - s_new) * se_theta, 2)
+                    cal.model_se[mid] = max(round(100.0 * ALPHA * s_new * (1.0 - s_new) * se_theta, 2), 1.5)
 
-    # Aggregate evidence provenance per model across all scored observations
-    model_obs: dict[str, list[Observation]] = {}
-    for obs in observations:
-        if obs.is_agent_product:
-            continue
-        spec = BENCHMARK_REGISTRY.get(obs.benchmark_id)
-        if spec and spec.scored:
-            model_obs.setdefault(obs.canonical_model_id, []).append(obs)
+    by_model: dict[str, list[Observation]] = {}
+    for o in clean_obs:
+        by_model.setdefault(o.canonical_model_id, []).append(o)
+
+    all_models: set[str] = set()
+    for cal in calibrations.values():
+        all_models.update(cal.model_scores.keys())
 
     results: dict[str, dict[str, Any]] = {}
-    for mid, obs_list in model_obs.items():
+    for mid in sorted(all_models):
+        obs_list = by_model.get(mid, [])
         cat_scores: dict[str, float | None] = {}
         cat_se: dict[str, float | None] = {}
-        covered_cats: list[CategoryId] = []
+        covered_cats: list[str] = []
+
         weighted_sum = 0.0
         weight_sum = 0.0
         var_sum = 0.0
 
-        for c in categories:
-            cal = calibrations[c]
-            if mid in cal.model_scores:
-                sc = cal.model_scores[mid]
-                se = cal.model_se[mid]
-                cat_scores[c] = sc
-                cat_se[c] = se
-                covered_cats.append(c)
-                w = weights[c]
+        for cat, w in cat_weights.items():
+            cal = calibrations[cat]
+            sc = cal.model_scores.get(mid)
+            se = cal.model_se.get(mid)
+            cat_scores[cat] = sc
+            cat_se[cat] = se
+            if sc is not None and se is not None:
+                covered_cats.append(cat)
                 weighted_sum += w * sc
                 weight_sum += w
                 var_sum += (w * se) ** 2
-            else:
-                cat_scores[c] = None
-                cat_se[c] = None
 
         if weight_sum <= 0:
             continue
 
         overall = weighted_sum / weight_sum
-        # Widen uncertainty smoothly when categories are missing (missingness penalty)
         missing_weight = max(0.0, 1.0 - weight_sum)
         base_se = math.sqrt(var_sum) / weight_sum
         overall_se = math.sqrt(base_se ** 2 + (missing_weight * 6.5) ** 2)
         ci_low = round(max(0.0, overall - 1.645 * overall_se), 2)
         ci_high = round(min(100.0, overall + 1.645 * overall_se), 2)
 
-        distinct_benchmarks = {o.benchmark_id for o in obs_list}
+        scored_obs = [
+            o
+            for o in obs_list
+            if (spec := BENCHMARK_REGISTRY.get(o.benchmark_id)) and spec.scored
+        ]
+        core_obs = [
+            o
+            for o in scored_obs
+            if BENCHMARK_REGISTRY[o.benchmark_id].core
+        ]
+        distinct_benchmarks = {o.benchmark_id for o in scored_obs}
+        core_benchmarks = {o.benchmark_id for o in core_obs}
+        core_cats = {o.category for o in core_obs if o.category in covered_cats}
+        auxiliary_only_cats = sorted(c for c in covered_cats if c not in core_cats)
+
         indep_families = {
             o.source_family
-            for o in obs_list
+            for o in scored_obs
             if o.source_type in ("benchmark_run", "independent_run")
         }
-        all_families = {o.source_family for o in obs_list}
+        core_indep_families = {
+            o.source_family
+            for o in core_obs
+            if o.source_type in ("benchmark_run", "independent_run")
+        }
+        all_families = {o.source_family for o in scored_obs}
 
-        # Minimum catalog visibility threshold: >= 2 benchmarks, OR >= 3 observations
-        # Supported requires >= 2 independent families, >= 2 categories, and >= 4 distinct benchmarks
+        # Supported requires >= 2 independent families & >= 4 benchmarks on core engineering tasks,
+        # preventing Exercism drills / standalone tool-calling / contest algo from granting Supported alone.
         is_supported = (
-            len(indep_families) >= 2
-            and len(covered_cats) >= 2
-            and "repo" in covered_cats
-            and len(distinct_benchmarks) >= 4
+            len(core_indep_families) >= 2
+            and len(core_cats) >= 2
+            and "repo" in core_cats
+            and len(core_benchmarks) >= 4
         )
         is_eligible_overall = (
             len(distinct_benchmarks) >= 3
             and len(covered_cats) >= 2
-            and "repo" in covered_cats
+            and "repo" in core_cats
         )
 
         latest_date = max((o.date or "" for o in obs_list), default="") or None
@@ -373,6 +415,7 @@ def score_all_models(
             "category_scores": cat_scores,
             "category_se": cat_se,
             "covered_categories": covered_cats,
+            "auxiliary_only_categories": auxiliary_only_cats,
             "benchmark_count": len(distinct_benchmarks),
             "observation_count": len(obs_list),
             "independent_family_count": len(indep_families),
@@ -386,7 +429,6 @@ def score_all_models(
     ranked_pool = [r for r in results.values() if r["eligible_overall"]]
     ranked_pool.sort(key=lambda r: r["overall_score"], reverse=True)
 
-    # Bubble-adjust single-source Estimated entries downward if within 2 points above another entry
     changed = True
     while changed:
         changed = False

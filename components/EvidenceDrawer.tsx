@@ -259,10 +259,26 @@ export function EvidenceDrawer({
                 {categories.map((c) => {
                   const val = model.category_scores[c];
                   const se = model.category_se[c];
+                  const isAuxOnly = model.auxiliary_only_categories?.includes(c);
                   return (
                     <div key={c} className="grid grid-cols-12 items-center gap-2.5 text-xs">
-                      <span className="col-span-4 font-medium text-[var(--color-foreground)]">
-                        {catLabel(c)}
+                      <span
+                        className="col-span-4 inline-flex items-center gap-1 font-medium text-[var(--color-foreground)]"
+                        title={
+                          isAuxOnly
+                            ? tx(
+                                "该维度目前仅包含辅助/竞赛/工具类子项实测",
+                                "Covered only by auxiliary (contest/tool/drill) tracks"
+                              )
+                            : undefined
+                        }
+                      >
+                        <span className="truncate">{catLabel(c)}</span>
+                        {isAuxOnly && (
+                          <span className="rounded bg-[var(--color-fill2)] px-1 py-0.5 font-mono text-[9px] text-[var(--color-faint)]">
+                            {tx("辅助", "Aux")}
+                          </span>
+                        )}
                       </span>
                       <div className="col-span-5">
                         <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-fill2)]">
@@ -392,7 +408,11 @@ export function EvidenceDrawer({
                         </div>
                         {bmeta && (
                           <div className="font-mono text-[10px] text-[var(--color-faint)]">
-                            {tx("基准权重", "Weight")} ×{bmeta.base_weight.toFixed(2)}
+                            {!bmeta.scored
+                              ? tx("外部对照 (不进主分)", "Ref Only (Non-IRT)")
+                              : bmeta.core === false
+                                ? tx(`辅助权重 ×${bmeta.base_weight.toFixed(2)}`, `Aux ×${bmeta.base_weight.toFixed(2)}`)
+                                : tx(`基准权重 ×${bmeta.base_weight.toFixed(2)}`, `Weight ×${bmeta.base_weight.toFixed(2)}`)}
                           </div>
                         )}
                       </div>

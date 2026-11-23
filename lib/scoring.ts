@@ -184,7 +184,7 @@ export const BENCHMARK_SHORT_NAMES: Record<string, string> = {
   multi_swe_bench: "Multi-SWE",
   aider_polyglot: "Aider",
   terminal_bench_41: "TB-4.1",
-  vals_terminal_bench: "Vals TB",
+  vals_terminal_bench: "Vals TB 1.0",
   mirrorcode: "MirrorCode",
   otelbench: "OTelBench",
   compilebench: "CompileBench",

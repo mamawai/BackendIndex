@@ -32,6 +32,7 @@ class Observation:
     duration_sec: float | None = None
     margin: float | None = None
     is_agent_product: bool = False
+    source_url_override: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

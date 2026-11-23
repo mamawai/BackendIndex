@@ -80,7 +80,11 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "gpt-5-mini": ("gpt-5-mini", "GPT-5 Mini", "OpenAI"),
     "gpt5": ("gpt-5", "GPT-5", "OpenAI"),
     "gpt-5-1-codex-max": ("gpt-5-1-codex-max", "GPT-5.1 Codex Max", "OpenAI"),
+    "gpt-5-1-codex": ("gpt-5-1-codex", "GPT-5.1 Codex", "OpenAI"),
     "gpt-5-1": ("gpt-5-1", "GPT-5.1", "OpenAI"),
+    "claude-mythos-preview": ("claude-mythos-preview", "Claude Mythos Preview", "Anthropic"),
+    "muse-spark": ("muse-spark", "Muse Spark", "Meta"),
+    "muse-spark-1-1": ("muse-spark-1-1", "Muse Spark 1.1", "Meta"),
     "gpt-5-codex": ("gpt-5-codex", "GPT-5 Codex", "OpenAI"),
     "gpt-5": ("gpt-5", "GPT-5", "OpenAI"),
     "gemini-4-neon": ("gemini-4-neon", "Gemini 4 Neon", "Google"),
@@ -140,10 +144,11 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
 }
 
 EFFORT_PATTERN = re.compile(
-    r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|unknown)\s*\)"
-    r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking)\s*\]"
+    r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|fp8|nvfp4|fp4|bf16|fp16|int8|int4|unknown)\s*\)"
+    r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking|fp8|nvfp4|fp4|bf16|fp16)\s*\]"
     r"|_(xhigh|high|medium|low|max|minimal|none|promax|unknown)"
-    r"|-(xhigh|high|medium|low|max)(?=$|-)"
+    r"|-(xhigh|high|medium|low|max|fp8|nvfp4|fp4|bf16|fp16|int8|int4)(?=$|-)"
+    r"|\s+(fp8|nvfp4|fp4|bf16|fp16|int8|int4)"
     r"|\s*-\s*thinking(?:-\d+k)?)$",
     re.IGNORECASE,
 )
@@ -294,9 +299,12 @@ class ModelNormalizer:
                 cleaned = inner_clean
                 is_agent_product = False
 
-        # Extract reasoning effort tags & trailing date tokens like "0813" or "(12/25)"
+        # Strip effort/thinking tags only when pre-stripping string is not itself a canonical model ID
         effort: str | None = None
         while True:
+            pre_slug = slugify(re.sub(r"\s+", " ", cleaned).strip())
+            if pre_slug in self.known_aliases:
+                break
             m = EFFORT_PATTERN.search(cleaned)
             if not m:
                 break
