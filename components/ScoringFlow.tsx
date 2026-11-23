@@ -60,8 +60,8 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
       title: tx("分维度 IRT", "Per-Dimension IRT"),
       value: tx("6 个维度各自拟合", "6 separate fits"),
       note: tx(
-        `估出每个基准的难度和区分度，不借其它维度的分；和主榜不连通的 ${excludedCount} 项基准不计分；再对齐到仓库研发刻度`,
-        `Estimates each benchmark's difficulty & discrimination with no cross-dimension borrowing; ${excludedCount} disconnected benchmarks are not scored; linked to the Repo scale`
+        `估出每个基准的难度和区分度，不借其它维度的分；和主榜不连通的 ${excludedCount} 项基准不计分；再按精度加权对齐到仓库研发刻度`,
+        `Estimates each benchmark's difficulty & discrimination with no cross-dimension borrowing; ${excludedCount} disconnected benchmarks are not scored; precision-weighted linking to the Repo scale`
       ),
     },
     {

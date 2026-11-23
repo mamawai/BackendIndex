@@ -142,6 +142,17 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         description="聚焦代码质量与仓库维护者合并标准的工程编码测试（1.1 Main）",
         tier="S",
     ),
+    # S：132 道私有真实仓库工程任务，AA 统一独立复测
+    "frontiercode_2_aa": BenchmarkSpec(
+        id="frontiercode_2_aa",
+        name="FrontierCode 2.0 (AA)",
+        category="repo",
+        source_family="Artificial Analysis",
+        source_url="https://artificialanalysis.ai/evaluations/frontiercode-2-0",
+        default_source_type="independent_run",
+        description="Artificial Analysis 独立复测的 Cognition FrontierCode 2.0（132 道私有真实仓库工程任务）",
+        tier="S",
+    ),
     # A（原 S）：真实生产仓库盲测，但只有 2 个仓库、105 个 bug、仅 TypeScript，作者个人维护
     "bughunt": BenchmarkSpec(
         id="bughunt",
@@ -310,7 +321,7 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         tier="B",
     ),
     # --- Systems, DevOps & SRE ---
-    # S：真实容器终端排错与运维任务，维护方统一跑
+    # S：真实容器终端排错与运维任务，维护方统一跑（与 4.0 同系拆权）
     "terminal_bench_41": BenchmarkSpec(
         id="terminal_bench_41",
         name="Terminal-Bench 4.1",
@@ -318,8 +329,21 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         source_family="Harbor / TBench",
         source_url="https://www.tbench.ai/",
         default_source_type="benchmark_run",
-        description="Terminal-Bench 4.1：通用容器终端操作、环境排错与命令行工程任务",
+        description="Terminal-Bench 4.1：通用容器终端操作、环境排错与命令行工程任务（与 4.0 同系拆权）",
         tier="S",
+        overlap_group="tbench_4x",
+    ),
+    # S：66 道容器终端运维工程任务，AA 与 Vals 双独立复测（与 4.1 同系拆权）
+    "terminal_bench_40": BenchmarkSpec(
+        id="terminal_bench_40",
+        name="Terminal-Bench 4.0 (AA / Vals)",
+        category="systems",
+        source_family="AA / Vals AI",
+        source_url="https://www.vals.ai/benchmarks/terminal-bench-4",
+        default_source_type="independent_run",
+        description="Terminal-Bench 4.0：66 道复杂容器终端与系统排错任务，聚合 AA 与 Vals 独立复测（与 4.1 同系拆权）",
+        tier="S",
+        overlap_group="tbench_4x",
     ),
     # S：11 种后端语言微服务的 OpenTelemetry 插桩改造
     "otelbench": BenchmarkSpec(
@@ -555,6 +579,39 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         core=False,
     ),
     # --- Backend Security ---
+    # S：120 道六语言 OWASP Top 10 真实仓库审计与补丁修复，确定性 pass@1，AA 独立实测
+    "cwe_bench_aa": BenchmarkSpec(
+        id="cwe_bench_aa",
+        name="CWE-Bench-AA",
+        category="security",
+        source_family="Artificial Analysis",
+        source_url="https://artificialanalysis.ai/evaluations/cwe-bench-aa",
+        default_source_type="independent_run",
+        description="Artificial Analysis 独立执行的 120 道六语言 OWASP Top 10 真实仓库安全审计与漏洞补丁基准（pass@1）",
+        tier="S",
+    ),
+    # A：Vercel 真实 Web 应用安全静态审计（中位 F2），含裁判打分故定 A 档
+    "deepsecbench_aa": BenchmarkSpec(
+        id="deepsecbench_aa",
+        name="DeepsecBench-AA",
+        category="security",
+        source_family="Artificial Analysis",
+        source_url="https://artificialanalysis.ai/evaluations/deepsecbench-aa",
+        default_source_type="independent_run",
+        description="Artificial Analysis 独立执行的 Vercel 真实 Web 应用代码安全审计基准（中位 F2 分）",
+        tier="A",
+    ),
+    # A：64 道无源码二进制逆向分析任务，偏专精故定 A 档
+    "vals_srebench": BenchmarkSpec(
+        id="vals_srebench",
+        name="SRE Bench · RevEng (Vals)",
+        category="security",
+        source_family="Vals AI",
+        source_url="https://www.vals.ai/benchmarks/srebench",
+        default_source_type="independent_run",
+        description="Vals AI 独立执行的 64 道无源码软件逆向工程与二进制安全分析基准",
+        tier="A",
+    ),
     # S：真实开源软件漏洞复现与修复，Vals 统一跑
     "vals_cyber": BenchmarkSpec(
         id="vals_cyber",

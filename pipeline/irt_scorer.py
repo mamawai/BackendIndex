@@ -372,27 +372,31 @@ def _place_main_groups(
     if anchor is None:
         return list(mains.values()), dropped
     a_theta = dict(zip(anchor.data.models, anchor.theta.tolist()))
-    a_cnt = anchor.obs_count()
+    a_se = dict(zip(anchor.data.models, anchor.theta_se.tolist()))
 
     placed = [anchor]
     for c, g in mains.items():
         if g is anchor:
             continue
-        cnt = g.obs_count()
         idx = {m: i for i, m in enumerate(g.data.models)}
         common = [m for m in g.data.models if m in a_theta]
-        # 优先用两边都有 ≥2 个基准的模型来对齐，估计更稳
-        reliable = [m for m in common if cnt[m] >= 2 and a_cnt[m] >= 2]
-        use = reliable if len(reliable) >= 6 else common
-        if len(use) < 4:
+        if len(common) < 4:
             # 和仓库研发几乎没有共同模型，放不到统一刻度上：这个维度不计分
             dropped[c].append(g)
             continue
-        a_vals = np.array([a_theta[m] for m in use])
-        g_vals = np.array([g.theta[idx[m]] for m in use])
-        mu_a, sd_a = float(np.mean(a_vals)), float(np.std(a_vals))
-        mu_g, sd_g = float(np.mean(g_vals)), float(np.std(g_vals))
-        ratio = float(np.clip(sd_a / max(sd_g, 0.2), 0.7, 1.45)) if sd_g > 0.1 else 1.0
+        a_vals = np.array([a_theta[m] for m in common])
+        g_vals = np.array([g.theta[idx[m]] for m in common])
+        a_var = np.array([a_se[m] ** 2 for m in common])
+        g_var = np.array([g.theta_se[idx[m]] ** 2 for m in common])
+        # 用全部共同模型对齐，按两边后验方差之和的反方差加权：测得越准话语权越大
+        w = 1.0 / (a_var + g_var)
+        w /= w.sum()
+        mu_a = float(np.sum(w * a_vals))
+        mu_g = float(np.sum(w * g_vals))
+        # 全方差公式：把后验自身方差加回去，抵消单基准模型向 0 收缩导致的标准差偏小
+        sd_a = math.sqrt(float(np.sum(w * ((a_vals - mu_a) ** 2 + a_var))))
+        sd_g = math.sqrt(float(np.sum(w * ((g_vals - mu_g) ** 2 + g_var))))
+        ratio = sd_a / sd_g if sd_g > 0.1 else 1.0
         g.theta = (g.theta - mu_g) * ratio + mu_a
         g.theta_se = g.theta_se * ratio
         # a·(θ − d) 在新刻度下保持不变

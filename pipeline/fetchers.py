@@ -534,14 +534,16 @@ def fetch_swe_rebench(norm: ModelNormalizer, refresh: bool = False) -> list[Obse
 
 
 def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Parse Vals AI SSR HTML tables for SWE-bench, ProgramBench, Code Migration, IOI, Cyber, Terminal-Bench."""
+    """Parse Vals AI SSR HTML tables for SWE-bench, ProgramBench, Code Migration, IOI, Cyber, SRE Bench, Terminal-Bench."""
     pages: list[tuple[str, str, SourceType]] = [
         ("vals_swebench", "https://www.vals.ai/benchmarks/swebench", "independent_run"),
         ("vals_programbench", "https://www.vals.ai/benchmarks/programbench", "independent_run"),
         ("vals_code_migration", "https://www.vals.ai/benchmarks/code-migration-v1-1", "benchmark_run"),
         ("vals_ioi", "https://www.vals.ai/benchmarks/ioi", "benchmark_run"),
         ("vals_cyber", "https://www.vals.ai/benchmarks/cyber", "benchmark_run"),
+        ("vals_srebench", "https://www.vals.ai/benchmarks/srebench", "independent_run"),
         ("vals_terminal_bench", "https://www.vals.ai/benchmarks/terminal-bench", "independent_run"),
+        ("terminal_bench_40", "https://www.vals.ai/benchmarks/terminal-bench-4", "independent_run"),
     ]
     obs_list: list[Observation] = []
     for bench_id, url, stype in pages:
@@ -574,7 +576,10 @@ def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
                     rate,
                     score_str,
                     harness=harness,
+                    # 显式标明 Vals AI 来源家族与链接，避免双源基准（如 TB 4.0）串成默认家族名
+                    source_family="Vals AI",
                     source_type=stype,
+                    source_url=url,
                     cost_usd=cost,
                     cost_unit="per_task",
                     tokens=tokens,
@@ -1295,9 +1300,18 @@ def fetch_tinybird_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
     return [pair[1] for pair in best_by_key.values()]
 
 
-def fetch_itbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Fetch Artificial Analysis ITBench-AA (59 Kubernetes SRE root-cause localization snapshots)."""
-    url = "https://artificialanalysis.ai/evaluations/itbench-aa"
+def _fetch_aa_evaluation(
+    norm: ModelNormalizer,
+    benchmark_id: str,
+    url: str,
+    score_key: str,
+    *,
+    refresh: bool = False,
+    harness: str | None = None,
+    refusal_key: str | None = None,
+    extra_keys: dict[str, str] | None = None,
+) -> list[Observation]:
+    """Generic SSR JSON parser for Artificial Analysis independent evaluation pages."""
     html = cached_text(url, refresh=refresh)
     unesc = html.replace('\\"', '"').replace("\\\\", "\\")
 
@@ -1310,8 +1324,8 @@ def fetch_itbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Obser
             continue
         if not isinstance(obj, dict):
             continue
-        sre = obj.get("itbenchSre")
-        if not isinstance(sre, (int, float)):
+        raw_val = obj.get(score_key)
+        if not isinstance(raw_val, (int, float)):
             continue
 
         raw_name = (obj.get("shortName") or obj.get("name") or obj.get("slug") or "").strip()
@@ -1326,19 +1340,30 @@ def fetch_itbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Obser
         if aa_effort in ("none", "default", "unknown"):
             aa_effort = None
 
-        rate = max(0.0, min(1.0, float(sre)))
+        rate = max(0.0, min(1.0, float(raw_val)))
         extra: dict[str, Any] = {}
-        if isinstance(obj.get("itbenchAvgTurnsPerTask"), (int, float)):
-            extra["avg_turns"] = round(float(obj["itbenchAvgTurnsPerTask"]), 2)
+        # 顺手带上 AA 里记录的模型发布日期，方便新鲜度自动判定
+        rel_date = normalize_iso_date(obj.get("releaseDate") if isinstance(obj.get("releaseDate"), str) else None)
+        if rel_date:
+            extra["model_release_date"] = rel_date
+        if refusal_key and isinstance(obj.get(refusal_key), (int, float)):
+            extra["refusal_rate"] = round(float(obj[refusal_key]), 4)
+        if extra_keys:
+            for src_k, dst_k in extra_keys.items():
+                if isinstance(obj.get(src_k), (int, float)):
+                    extra[dst_k] = round(float(obj[src_k]), 2)
 
         obs = make_obs(
             norm,
-            "itbench_aa",
+            benchmark_id,
             raw_name,
             rate,
             f"{rate * 100:.1f}%",
             org_hint=creator_name,
+            harness=harness,
             effort=aa_effort,
+            source_family="Artificial Analysis",
+            source_type="independent_run",
             source_url=url,
             extra=extra,
         )
@@ -1347,6 +1372,131 @@ def fetch_itbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Obser
             best_by_key[key] = obs
 
     return list(best_by_key.values())
+
+
+def fetch_itbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Artificial Analysis ITBench-AA (59 Kubernetes SRE root-cause localization snapshots)."""
+    return _fetch_aa_evaluation(
+        norm,
+        "itbench_aa",
+        "https://artificialanalysis.ai/evaluations/itbench-aa",
+        "itbenchSre",
+        refresh=refresh,
+        extra_keys={"itbenchAvgTurnsPerTask": "avg_turns"},
+    )
+
+
+def fetch_cwe_bench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Artificial Analysis CWE-Bench-AA (120 OWASP Top 10 multi-language repo audit & patch tasks)."""
+    return _fetch_aa_evaluation(
+        norm,
+        "cwe_bench_aa",
+        "https://artificialanalysis.ai/evaluations/cwe-bench-aa",
+        "cweBench",
+        refresh=refresh,
+        harness="Stirrup",
+        refusal_key="cweBenchRefusalRate",
+    )
+
+
+def fetch_deepsecbench_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Artificial Analysis DeepsecBench-AA (Vercel real web-app security static audit, median F2)."""
+    return _fetch_aa_evaluation(
+        norm,
+        "deepsecbench_aa",
+        "https://artificialanalysis.ai/evaluations/deepsecbench-aa",
+        "deepsecBench",
+        refresh=refresh,
+        harness="Stirrup",
+        refusal_key="deepsecBenchRefusalRate",
+    )
+
+
+def fetch_frontiercode_2_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Artificial Analysis independent run of Cognition FrontierCode 2.0 (132 private repo tasks)."""
+    return _fetch_aa_evaluation(
+        norm,
+        "frontiercode_2_aa",
+        "https://artificialanalysis.ai/evaluations/frontiercode-2-0",
+        "frontierCode20",
+        refresh=refresh,
+    )
+
+
+def fetch_terminal_bench_40_aa(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch Artificial Analysis independent run of Terminal-Bench 4.0 (66 container terminal tasks)."""
+    return _fetch_aa_evaluation(
+        norm,
+        "terminal_bench_40",
+        "https://artificialanalysis.ai/evaluations/terminalbench-4-0",
+        "terminalBench40",
+        refresh=refresh,
+    )
+
+
+_FRONTIERSWE_VENDORS: dict[str, str] = {
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "google": "Google",
+    "deepseek": "DeepSeek",
+    "zai": "Z.ai",
+    "xai": "xAI",
+    "moonshot": "Moonshot AI",
+    "meta": "Meta",
+    "qwen": "Alibaba",
+    "thinkingmachines": "Thinking Machines",
+}
+
+
+def fetch_frontierswe(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
+    """Fetch official FrontierSWE V2 Implementation & Performance tracks directly from frontierswe.com."""
+    base_url = "https://www.frontierswe.com/"
+    html = cached_text(base_url, refresh=refresh)
+    unesc = html.replace('\\"', '"').replace("\\\\", "\\")
+    m = re.search(r'"entries":\{', unesc)
+    if not m:
+        return []
+    entries, _ = json.JSONDecoder().raw_decode(unesc, m.end() - 1)
+    # 官网 entries.abs.mean 里的 implementation / performance 与 Epoch 归档口径完全一致
+    rows = ((entries.get("abs") or {}).get("mean")) or []
+
+    obs_list: list[Observation] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        raw_model = (r.get("model") or "").strip()
+        if not raw_model:
+            continue
+        vendor_key = str(r.get("vendor") or "").strip().lower()
+        org_hint = _FRONTIERSWE_VENDORS.get(vendor_key) or (vendor_key or None)
+        harness = (r.get("harness") or "").strip() or None
+        cost_usd = float(r["avgCostUsd"]) if isinstance(r.get("avgCostUsd"), (int, float)) else None
+        dur_sec = float(r["avgDurationSeconds"]) if isinstance(r.get("avgDurationSeconds"), (int, float)) else None
+        trace_href = (r.get("traceHref") or "").strip()
+        row_url = f"https://www.frontierswe.com{trace_href}" if trace_href.startswith("/") else base_url
+
+        for col, bench_id in (("implementation", "frontierswe"), ("performance", "frontierswe_perf")):
+            val = r.get(col)
+            if not isinstance(val, (int, float)):
+                continue
+            rate = float(val) / 100.0 if float(val) > 1.0 else float(val)
+            obs_list.append(
+                make_obs(
+                    norm,
+                    bench_id,
+                    raw_model,
+                    rate,
+                    f"{rate * 100:.1f}%",
+                    org_hint=org_hint,
+                    harness=harness,
+                    source_type="benchmark_run",
+                    source_url=row_url,
+                    cost_usd=cost_usd,
+                    cost_unit="per_task",
+                    duration_sec=dur_sec,
+                )
+            )
+    return obs_list
 
 
 def _extract_js_object_array(js_text: str, marker_regex: str) -> list[str]:

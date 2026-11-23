@@ -26,9 +26,13 @@ from fetchers import (
     fetch_bfcl,
     fetch_bughunt,
     fetch_compilebench,
+    fetch_cwe_bench_aa,
     fetch_cybench,
     fetch_cybergym,
+    fetch_deepsecbench_aa,
     fetch_epoch_archive,
+    fetch_frontiercode_2_aa,
+    fetch_frontierswe,
     fetch_gso,
     fetch_inferencebench,
     fetch_itbench_aa,
@@ -40,6 +44,7 @@ from fetchers import (
     fetch_spider2,
     fetch_swe_rebench,
     fetch_tbench,
+    fetch_terminal_bench_40_aa,
     fetch_tinybird_sql,
     fetch_vals,
 )
@@ -158,16 +163,17 @@ def run_pipeline(refresh: bool = False) -> Path:
     all_obs.extend(or_obs)
     source_stats["openrouter_aa"] = {"status": "ok", "observations": len(or_obs), "models_meta": len(meta_map)}
 
-    print("2/15 Fetching authoritative direct tracks (GSO, Cybench, CyberGym, BFCL)...")
+    print("2/15 Fetching authoritative direct tracks (FrontierSWE, GSO, Cybench, CyberGym, BFCL)...")
+    official_frontierswe = ingest("frontierswe_official", lambda: fetch_frontierswe(norm, refresh=refresh))
     official_gso = ingest("gso_official", lambda: fetch_gso(norm, refresh=refresh))
     official_cybench = ingest("cybench_official", lambda: fetch_cybench(norm, refresh=refresh))
     ingest("cybergym_official", lambda: fetch_cybergym(norm, refresh=refresh))
     ingest("berkeley_bfcl", lambda: fetch_bfcl(norm, refresh=refresh))
 
-    # Prevent Epoch archive copies from colliding with official GSO/Cybench canonical pairs
+    # Prevent Epoch archive copies from colliding with official FrontierSWE/GSO/Cybench canonical pairs
     official_pairs = {
         (o.canonical_model_id, o.benchmark_id)
-        for o in (*official_gso, *official_cybench)
+        for o in (*official_frontierswe, *official_gso, *official_cybench)
     }
 
     print("3/15 Fetching Epoch AI benchmark_data.zip (gap-filling historical rows cleanly)...")
@@ -195,10 +201,14 @@ def run_pipeline(refresh: bool = False) -> Path:
     print("8/15 Fetching Scale SWE-Atlas / SWE-bench Pro / Multilingual / NL2Repo / MCP Atlas...")
     ingest("benchlm_supplements", lambda: fetch_benchlm_supplements(norm, refresh=refresh))
 
-    print("9/15 Fetching AutoBaxBench Hard, Tinybird SQL, ITBench-AA & InferenceBench...")
+    print("9/15 Fetching AutoBaxBench Hard, Tinybird SQL, AA independent evals & InferenceBench...")
     ingest("autobaxbench_hard", lambda: fetch_autobaxbench_hard(norm, refresh=refresh))
     ingest("tinybird_sql", lambda: fetch_tinybird_sql(norm, refresh=refresh))
     ingest("itbench_aa", lambda: fetch_itbench_aa(norm, refresh=refresh))
+    ingest("cwe_bench_aa", lambda: fetch_cwe_bench_aa(norm, refresh=refresh))
+    ingest("deepsecbench_aa", lambda: fetch_deepsecbench_aa(norm, refresh=refresh))
+    ingest("frontiercode_2_aa", lambda: fetch_frontiercode_2_aa(norm, refresh=refresh))
+    ingest("terminal_bench_40_aa", lambda: fetch_terminal_bench_40_aa(norm, refresh=refresh))
     ingest("inferencebench", lambda: fetch_inferencebench(norm, refresh=refresh))
 
     generated = datetime.now(timezone.utc)
