@@ -64,8 +64,8 @@ export function MethodologyView({ snapshot }: MethodologyViewProps) {
           </h3>
           <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
             {tx(
-              "观测权重 = Tier 权重（S: 1.25–1.60 / A: 0.90–1.15 / B: 0.60–0.80）× 来源权重（独立/维护方 1.0，厂商自报/转引 0.72）× 新鲜度（现役 1.0，陈旧 0.55）；同题集子榜按比例拆权，单一评测家族上限 40%–45%。",
-              "Effective Weight = Tier (S: 1.25–1.60, A: 0.90–1.15, B: 0.60–0.80) × Provenance (Independent/Maintainer 1.0, Self-reported/3rd-party 0.72) × Freshness (1.0 vs 0.55), with shared-question overlap splits and a 40%–45% family cap."
+              "观测权重 = Tier 权重（S: 1.25–1.60 / A: 0.90–1.20 / B: 0.60–0.80）× 来源权重（独立/维护方 1.0，厂商自报/转引 0.72）× 新鲜度（现役 1.0，陈旧 0.55）；同题集子榜按比例拆权，单一评测家族上限 40%–45%。",
+              "Effective Weight = Tier (S: 1.25–1.60, A: 0.90–1.20, B: 0.60–0.80) × Provenance (Independent/Maintainer 1.0, Self-reported/3rd-party 0.72) × Freshness (1.0 vs 0.55), with shared-question overlap splits and a 40%–45% family cap."
             )}
           </p>
         </div>
@@ -144,7 +144,7 @@ export function MethodologyView({ snapshot }: MethodologyViewProps) {
                   <th>{tx("所属维度", "Dimension")}</th>
                   <th className="text-right">{tx("基准权重", "Base Weight")}</th>
                   <th className="text-right">{tx("IRT 难度 / 区分度", "IRT Diff / Disc")}</th>
-                  <th className="text-right">{tx("入榜模型数", "Models")}</th>
+                  <th className="text-right">{tx("IRT 校准模型数", "IRT Models")}</th>
                   <th className="text-right">{tx("原站", "Source")}</th>
                 </tr>
               </thead>
@@ -169,7 +169,7 @@ export function MethodologyView({ snapshot }: MethodologyViewProps) {
                               {tx("辅助子项", "Auxiliary")}
                             </span>
                           )}
-                          {b.freshness === "aging" && (
+                          {b.scored && b.freshness === "aging" && (
                             <span className="tag w">
                               {tx("历史降权 ×0.55", "Aging ×0.55")}
                             </span>

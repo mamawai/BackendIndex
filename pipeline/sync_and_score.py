@@ -28,7 +28,7 @@ from fetchers import (
     fetch_tbench,
     fetch_vals,
 )
-from irt_scorer import deduplicate_observations, score_all_models
+from irt_scorer import score_all_models
 from models import ModelMetadata, Observation
 from normalizer import ModelNormalizer
 
@@ -41,69 +41,68 @@ def run_pipeline(refresh: bool = False) -> Path:
     norm = ModelNormalizer()
     meta_map: dict[str, ModelMetadata] = {}
     all_obs: list[Observation] = []
-    source_stats: dict[str, dict[str, int | str]] = {}
+    source_stats: dict[str, dict[str, int | str | bool]] = {}
 
-    def ingest(name: str, fn) -> None:
+    def ingest(name: str, fn) -> list[Observation]:
         try:
             res = fn()
             if isinstance(res, tuple) and len(res) == 2 and isinstance(res[1], list):
-                added = res[1]
+                info_extra, added = res
                 all_obs.extend(added)
-                source_stats[name] = {"status": "ok", "observations": len(added)}
-            else:
-                all_obs.extend(res)
-                source_stats[name] = {"status": "ok", "observations": len(res)}
+                stats: dict[str, int | str | bool] = {"status": "ok", "observations": len(added)}
+                if isinstance(info_extra, dict):
+                    for k, v in info_extra.items():
+                        if isinstance(v, (int, str, bool)):
+                            stats[k] = v
+                source_stats[name] = stats
+                return added
+            all_obs.extend(res)
+            source_stats[name] = {"status": "ok", "observations": len(res)}
+            return res
         except Exception as exc:  # noqa: BLE001
             source_stats[name] = {"status": "error", "error": str(exc)}
+            return []
 
     print("1/15 Fetching OpenRouter pricing, context & AA reference indices...")
     meta_map, or_obs = fetch_openrouter_and_aa(norm, refresh=refresh)
     all_obs.extend(or_obs)
     source_stats["openrouter_aa"] = {"status": "ok", "observations": len(or_obs), "models_meta": len(meta_map)}
 
-    print("2/15 Fetching Epoch AI benchmark_data.zip...")
-    ingest("epoch_archive", lambda: fetch_epoch_archive(norm, meta_map, refresh=refresh))
+    print("2/15 Fetching authoritative direct tracks (GSO, Cybench, CyberGym, BFCL)...")
+    official_gso = ingest("gso_official", lambda: fetch_gso(norm, refresh=refresh))
+    official_cybench = ingest("cybench_official", lambda: fetch_cybench(norm, refresh=refresh))
+    ingest("cybergym_official", lambda: fetch_cybergym(norm, refresh=refresh))
+    ingest("berkeley_bfcl", lambda: fetch_bfcl(norm, refresh=refresh))
 
-    print("3/15 Fetching official GSO Opt@1 leaderboard JSON...")
-    ingest("gso_official", lambda: fetch_gso(norm, refresh=refresh))
+    # Prevent Epoch archive copies from colliding with official GSO/Cybench canonical pairs
+    official_pairs = {
+        (o.canonical_model_id, o.benchmark_id)
+        for o in (*official_gso, *official_cybench)
+    }
 
-    print("4/15 Fetching Terminal-Bench 4.1 (tbench.ai)...")
+    print("3/15 Fetching Epoch AI benchmark_data.zip (gap-filling historical rows cleanly)...")
+    ingest("epoch_archive", lambda: fetch_epoch_archive(norm, meta_map, official_pairs=official_pairs, refresh=refresh))
+
+    print("4/15 Fetching Terminal-Bench 4.1 & Bug Hunt Bench...")
     ingest("terminal_bench_41", lambda: fetch_tbench(norm, refresh=refresh))
-
-    print("5/15 Fetching Bug Hunt Bench (benchmark.json, filtering superseded runs)...")
     ingest("bug_hunt_bench", lambda: fetch_bughunt(norm, refresh=refresh))
 
-    print("6/15 Fetching SWE-rebench...")
+    print("5/15 Fetching SWE-rebench & Vals AI benchmarks...")
     ingest("swe_rebench", lambda: fetch_swe_rebench(norm, refresh=refresh))
-
-    print("7/15 Fetching Vals AI benchmarks...")
     ingest("vals_ai", lambda: fetch_vals(norm, refresh=refresh))
 
-    print("8/15 Fetching ActionTech SCALE SQL & LiveSQLBench...")
+    print("6/15 Fetching SCALE SQL, LiveSQLBench & Spider 2.0...")
     ingest("scale_sql", lambda: fetch_scale_sql(norm, refresh=refresh))
     ingest("livesqlbench", lambda: fetch_livesqlbench(norm, refresh=refresh))
-
-    print("9/15 Fetching Spider 2.0 (Snow / DBT / Lite)...")
     ingest("spider2", lambda: fetch_spider2(norm, refresh=refresh))
 
-    print("10/15 Fetching Quesma OTelBench & CompileBench...")
+    print("7/15 Fetching OTelBench, CompileBench, Multi-SWE-bench & Aider Polyglot...")
     ingest("otelbench", lambda: fetch_otelbench(norm, refresh=refresh))
     ingest("compilebench", lambda: fetch_compilebench(norm, refresh=refresh))
-
-    print("11/15 Fetching Multi-SWE-bench & Aider Polyglot...")
     ingest("multi_swe_bench", lambda: fetch_multiswebench(norm, refresh=refresh))
     ingest("aider_polyglot", lambda: fetch_aider_polyglot(norm, refresh=refresh))
 
-    print("12/15 Fetching official Berkeley BFCL CSV...")
-    ingest("berkeley_bfcl", lambda: fetch_bfcl(norm, refresh=refresh))
-
-    print("13/15 Fetching official Cybench CSV & footnotes...")
-    ingest("cybench_official", lambda: fetch_cybench(norm, refresh=refresh))
-
-    print("14/15 Fetching official CyberGym Level-1 JSON...")
-    ingest("cybergym_official", lambda: fetch_cybergym(norm, refresh=refresh))
-
-    print("15/15 Fetching Scale SWE-Atlas / SWE-bench Pro / Multilingual / NL2Repo / MCP Atlas...")
+    print("8/15 Fetching Scale SWE-Atlas / SWE-bench Pro / Multilingual / NL2Repo / MCP Atlas...")
     ingest("benchlm_supplements", lambda: fetch_benchlm_supplements(norm, refresh=refresh))
 
     print(f"\nTotal raw observations collected: {len(all_obs)}")
@@ -115,10 +114,10 @@ def run_pipeline(refresh: bool = False) -> Path:
         if not obs.is_agent_product:
             obs_by_model.setdefault(obs.canonical_model_id, []).append(obs)
 
+    # Representative scores come directly from IRT-fitted pairs so un-fitted items never appear as rep scores
     rep_scores_by_model: dict[str, dict[str, dict]] = {}
-    for cat in CATEGORY_WEIGHTS:
-        best_pairs = deduplicate_observations(all_obs, cat)
-        for (mid, bid), obs in best_pairs.items():
+    for cal in calibrations.values():
+        for (mid, bid), obs in cal.fitted_pairs.items():
             rep_scores_by_model.setdefault(mid, {})[bid] = {
                 "score": round(obs.raw_score * 100.0, 2),
                 "display": obs.raw_display,
@@ -142,33 +141,34 @@ def run_pipeline(refresh: bool = False) -> Path:
         primary_harness = harnesses[0] if harnesses else None
         eval_costs = [o.cost_usd for o in m_obs if o.cost_usd is not None and o.cost_usd > 0]
 
-        # Collapse identical duplicate observations across mirrored + official archives (e.g. GSO Epoch vs JSON)
-        seen_ledger: set[tuple[str, str, str, str | None, str | None, str | None]] = set()
+        # Deduplicate ledger deterministically using normalized numeric score (never formatted string)
+        seen_ledger: set[tuple[str, float, str, str, str]] = set()
         deduped_obs: list[Observation] = []
         for o in sorted(
             m_obs,
             key=lambda x: (
                 x.category,
                 x.benchmark_id,
-                -(x.raw_score),
+                -(x.extra.get("raw_value", x.raw_score)),
                 0 if x.source_type in ("benchmark_run", "independent_run") else 1,
                 0 if x.date else 1,
             ),
         ):
-            sig = (o.benchmark_id, o.raw_display, o.source_family, o.harness, o.effort, o.date)
-            # If the identical score+source+harness already exists with a verified date, skip undated mirror copy
-            alt_sig = (o.benchmark_id, o.raw_display, o.source_family, o.harness, o.effort, None)
-            if sig in seen_ledger or (o.date is None and any(s[:5] == sig[:5] for s in seen_ledger)):
+            metric_key = round(float(o.extra.get("raw_value", o.raw_score)), 3)
+            sig = (o.benchmark_id, metric_key, o.source_family, o.harness or "", o.effort or "")
+            if sig in seen_ledger:
                 continue
             seen_ledger.add(sig)
             deduped_obs.append(o)
 
-        ledger = [
-            {
+        ledger = []
+        for o in deduped_obs:
+            spec = BENCHMARK_REGISTRY[o.benchmark_id]
+            entry: dict[str, object] = {
                 "benchmark_id": o.benchmark_id,
                 "benchmark_name": o.benchmark_name,
                 "category": o.category,
-                "score": round(o.raw_score * 100.0, 2),
+                "score": round(o.raw_score * 100.0, 2) if spec.scored else None,
                 "raw_display": o.raw_display,
                 "source_family": o.source_family,
                 "source_type": o.source_type,
@@ -180,12 +180,17 @@ def run_pipeline(refresh: bool = False) -> Path:
                 "tokens": o.tokens,
                 "margin": round(o.margin * 100.0, 2) if o.margin is not None else None,
             }
-            for o in deduped_obs
-        ]
+            if "raw_value" in o.extra:
+                entry["raw_value"] = o.extra["raw_value"]
+                entry["raw_unit"] = o.extra.get("raw_unit")
+            ledger.append(entry)
+
+        # Keep observation_count strictly consistent with the deduplicated ledger length
+        score_info_synced = {**score_info, "observation_count": len(ledger)}
 
         models_payload.append(
             {
-                **score_info,
+                **score_info_synced,
                 "display_name": display_name,
                 "organization": org,
                 "is_open_weight": meta.is_open_weight if meta else False,

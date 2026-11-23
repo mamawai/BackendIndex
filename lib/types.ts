@@ -44,8 +44,10 @@ export interface LedgerItem {
   benchmark_id: string;
   benchmark_name: string;
   category: CategoryId;
-  score: number;
+  score: number | null;
   raw_display: string;
+  raw_value?: number | null;
+  raw_unit?: string | null;
   source_family: string;
   source_type: SourceType;
   source_url: string;
@@ -81,6 +83,7 @@ export interface ModelEntry {
   benchmark_count: number;
   observation_count: number;
   independent_family_count: number;
+  core_independent_family_count?: number;
   source_family_count: number;
   evidence_status: "Supported" | "Estimated";
   latest_date: string | null;

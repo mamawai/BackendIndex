@@ -130,7 +130,7 @@ export function EvidenceDrawer({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-mono text-xs font-medium text-[var(--color-primary)]">
-                #{model.dynamicRank}
+                #{model.rank}
               </span>
               <h2 className="text-lg font-semibold tracking-tight text-[var(--color-foreground)]">
                 {model.display_name}
@@ -138,8 +138,8 @@ export function EvidenceDrawer({
               {model.is_open_weight && <span className="tag g">Open Weights</span>}
               <span className={`tag ${model.evidence_status === "Supported" ? "g" : "w"}`}>
                 <i />
-                {model.evidence_status} · {model.independent_family_count}{" "}
-                {tx("独立来源", "indep. families")}
+                {model.evidence_status} · {model.core_independent_family_count ?? model.independent_family_count}{" "}
+                {tx("核心独立来源", "core indep. families")}
               </span>
             </div>
             <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
@@ -164,12 +164,21 @@ export function EvidenceDrawer({
           {/* Score & Specs Summary */}
           <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-4">
             <div className="blk p-3.5">
-              <div className="text-[11px] text-[var(--color-muted-foreground)]">
-                {tx("综合指数", "Overall Score")}
+              <div className="flex items-center justify-between gap-1 text-[11px] text-[var(--color-muted-foreground)]">
+                <span>{tx("综合指数", "Overall Score")}</span>
+                {(Math.abs(model.dynamicScore - model.overall_score) >= 0.05 ||
+                  model.dynamicRank !== model.rank) && (
+                  <span className="font-mono text-[10px] text-[var(--color-primary)]">
+                    {tx(
+                      `当前视图 #${model.dynamicRank} · ${model.dynamicScore.toFixed(1)}`,
+                      `View #${model.dynamicRank} · ${model.dynamicScore.toFixed(1)}`
+                    )}
+                  </span>
+                )}
               </div>
               <div className="mt-1 font-mono text-2xl font-light tracking-[-0.03em] text-[var(--color-foreground)]">
                 <NumberFlow
-                  value={model.dynamicScore}
+                  value={model.overall_score}
                   format={{ minimumFractionDigits: 1, maximumFractionDigits: 1 }}
                 />
               </div>
@@ -180,7 +189,7 @@ export function EvidenceDrawer({
                   "90% Confidence Interval from Fisher Information & missing-dimension penalty (not min/max)"
                 )}
               >
-                90% CI {model.dynamicCi[0].toFixed(1)}–{model.dynamicCi[1].toFixed(1)}
+                90% CI {model.ci_90[0].toFixed(1)}–{model.ci_90[1].toFixed(1)}
               </div>
             </div>
 

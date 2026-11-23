@@ -19,8 +19,8 @@ class Observation:
     benchmark_id: str
     benchmark_name: str
     category: CategoryId
-    raw_score: float  # Normalized to [0, 1] scale for IRT
-    raw_display: str  # Original formatted score string (e.g. "71.2%", "63.0 / 105")
+    raw_score: float  # Normalized to [0, 1] scale for IRT (0.0 for uncalibrated reference tracks)
+    raw_display: str  # Original formatted score string (e.g. "71.2%", "2.05×")
     source_family: str
     source_type: SourceType
     source_url: str
@@ -32,7 +32,6 @@ class Observation:
     duration_sec: float | None = None
     margin: float | None = None
     is_agent_product: bool = False
-    source_url_override: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
 
 

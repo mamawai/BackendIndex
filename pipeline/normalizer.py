@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-# Known organizations by keyword prefix
+# Known organizations ordered safely with word-boundary checks to prevent false substring hits (e.g. "Scaling" -> "ling")
 ORG_RULES: list[tuple[tuple[str, ...], str]] = [
     (("claude", "anthropic", "fable", "opus", "sonnet", "haiku", "mythos"), "Anthropic"),
     (("gpt", "o1", "o3", "o4", "codex", "openai"), "OpenAI"),
@@ -20,8 +20,8 @@ ORG_RULES: list[tuple[tuple[str, ...], str]] = [
     (("ernie", "baidu"), "Baidu"),
     (("doubao", "seed", "bytedance"), "ByteDance"),
     (("mimo", "xiaomi"), "Xiaomi"),
-    (("step", "stepfun"), "StepFun"),
-    (("ling", "inclusion"), "inclusionAI"),
+    (("stepfun",), "StepFun"),
+    (("ling", "inclusion", "inclusionai"), "inclusionAI"),
     (("mercury", "inception"), "Inception"),
     (("inkling", "thinking"), "Thinking Machines"),
     (("hy", "hunyuan", "tencent"), "Tencent"),
@@ -62,6 +62,11 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "claude-haiku-4-5": ("claude-haiku-4-5", "Claude Haiku 4.5", "Anthropic"),
     "claude-opus-4-1": ("claude-opus-4-1", "Claude Opus 4.1", "Anthropic"),
     "claude-sonnet-4": ("claude-sonnet-4", "Claude Sonnet 4", "Anthropic"),
+    "claude-3-7-sonnet": ("claude-3-7-sonnet", "Claude 3.7 Sonnet", "Anthropic"),
+    "claude-sonnet-3-7": ("claude-3-7-sonnet", "Claude 3.7 Sonnet", "Anthropic"),
+    "claude-3-5-sonnet": ("claude-3-5-sonnet", "Claude 3.5 Sonnet", "Anthropic"),
+    "claude-sonnet-3-5": ("claude-3-5-sonnet", "Claude 3.5 Sonnet", "Anthropic"),
+    "claude-3-opus": ("claude-3-opus", "Claude 3 Opus", "Anthropic"),
     "gpt-6-2-astra": ("gpt-6-2-astra", "GPT-6.2 Astra", "OpenAI"),
     "gpt-6-2-astra-pro": ("gpt-6-2-astra-pro", "GPT-6.2 Astra Pro", "OpenAI"),
     "gpt-6-2-sol": ("gpt-6-2-sol", "GPT-6.2 Sol", "OpenAI"),
@@ -76,23 +81,29 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "gpt-5-2-codex": ("gpt-5-2-codex", "GPT-5.2 Codex", "OpenAI"),
     "gpt-5-2": ("gpt-5-2", "GPT-5.2", "OpenAI"),
     "gpt5-2": ("gpt-5-2", "GPT-5.2", "OpenAI"),
-    "gpt-5-2-codex": ("gpt-5-2-codex", "GPT-5.2 Codex", "OpenAI"),
     "gpt-5-mini": ("gpt-5-mini", "GPT-5 Mini", "OpenAI"),
     "gpt5": ("gpt-5", "GPT-5", "OpenAI"),
     "gpt-5-1-codex-max": ("gpt-5-1-codex-max", "GPT-5.1 Codex Max", "OpenAI"),
     "gpt-5-1-codex": ("gpt-5-1-codex", "GPT-5.1 Codex", "OpenAI"),
     "gpt-5-1": ("gpt-5-1", "GPT-5.1", "OpenAI"),
+    "gpt-5-codex": ("gpt-5-codex", "GPT-5 Codex", "OpenAI"),
+    "gpt-5": ("gpt-5", "GPT-5", "OpenAI"),
+    "o1-preview": ("o1-preview", "o1-preview", "OpenAI"),
+    "o1-mini": ("o1-mini", "o1-mini", "OpenAI"),
+    "o1": ("o1", "o1", "OpenAI"),
+    "o3-mini": ("o3-mini", "o3-mini", "OpenAI"),
+    "o3": ("o3", "o3", "OpenAI"),
+    "o4-mini": ("o4-mini", "o4-mini", "OpenAI"),
     "claude-mythos-preview": ("claude-mythos-preview", "Claude Mythos Preview", "Anthropic"),
     "muse-spark": ("muse-spark", "Muse Spark", "Meta"),
     "muse-spark-1-1": ("muse-spark-1-1", "Muse Spark 1.1", "Meta"),
-    "gpt-5-codex": ("gpt-5-codex", "GPT-5 Codex", "OpenAI"),
-    "gpt-5": ("gpt-5", "GPT-5", "OpenAI"),
     "gemini-4-neon": ("gemini-4-neon", "Gemini 4 Neon", "Google"),
     "gemini-4-carbon": ("gemini-4-carbon", "Gemini 4 Carbon", "Google"),
     "gemini-4-hydrogen": ("gemini-4-hydrogen", "Gemini 4 Hydrogen", "Google"),
     "gemini-4-argon": ("gemini-4-argon", "Gemini 4 Argon", "Google"),
     "gemini-3-5-flash": ("gemini-3-5-flash", "Gemini 3.5 Flash", "Google"),
     "gemini-3-1-pro": ("gemini-3-1-pro", "Gemini 3.1 Pro", "Google"),
+    "gemini-3-1-pro-preview": ("gemini-3-1-pro", "Gemini 3.1 Pro", "Google"),
     "gemini-3-pro": ("gemini-3-pro", "Gemini 3 Pro", "Google"),
     "gemini-3-pro-preview": ("gemini-3-pro", "Gemini 3 Pro", "Google"),
     "gemini-3-flash": ("gemini-3-flash", "Gemini 3 Flash", "Google"),
@@ -144,21 +155,27 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
 }
 
 EFFORT_PATTERN = re.compile(
-    r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|fp8|nvfp4|fp4|bf16|fp16|int8|int4|unknown)\s*\)"
-    r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking|fp8|nvfp4|fp4|bf16|fp16)\s*\]"
+    r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|unknown)\s*\)"
+    r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking)\s*\]"
     r"|_(xhigh|high|medium|low|max|minimal|none|promax|unknown)"
-    r"|-(xhigh|high|medium|low|max|fp8|nvfp4|fp4|bf16|fp16|int8|int4)(?=$|-)"
-    r"|\s+(fp8|nvfp4|fp4|bf16|fp16|int8|int4)"
+    r"|-(xhigh|high|medium|low|max)(?=$|-)"
     r"|\s*-\s*thinking(?:-\d+k)?)$",
     re.IGNORECASE,
 )
 
-# Suffixes that represent standalone agent products rather than a single base LLM
+# Separate precision suffixes from reasoning effort so quantization checkpoints fold cleanly without overwriting effort
+QUANT_PATTERN = re.compile(
+    r"(?:\s*\(\s*(?:fp8|nvfp4|fp4|bf16|fp16|int8|int4)\s*\)"
+    r"|\s*\[\s*(?:fp8|nvfp4|fp4|bf16|fp16)\s*\]"
+    r"|[-\s]+(?:fp8|nvfp4|fp4|bf16|fp16|int8|int4))$",
+    re.IGNORECASE,
+)
+
 AGENT_PRODUCT_MARKERS = (
     "claude code agent",
     "codex agent",
     "cursor agent",
-    "junie agent",
+    "junie",
     "copilot fusion",
     "genloop",
     "signalpilot",
@@ -168,16 +185,18 @@ AGENT_PRODUCT_MARKERS = (
     "sqlflash",
     "sqlshift",
     "interfaze",
+    "tcdataagent",
+    "judge",
 )
 
 
 def infer_organization(name: str, fallback: str | None = None) -> str:
-    """Infer model creator organization from name or fallback."""
+    """Infer model creator organization from name or fallback without substring collisions."""
     if fallback and fallback.strip() and fallback.strip().lower() not in ("unknown", "other"):
         fb = fallback.strip()
         if "Google" in fb:
             return "Google"
-        if "Moonshot" in fb:
+        if "Moonshot" in fb or fb.lower() == "kimi":
             return "Moonshot AI"
         if fb.lower() == "qwen":
             return "Alibaba"
@@ -185,11 +204,14 @@ def infer_organization(name: str, fallback: str | None = None) -> str:
             return "Z.ai"
         if "SpaceXSI" in fb or fb.lower() == "xai":
             return "xAI"
+        if fb.lower().startswith("meta"):
+            return "Meta"
         return fb
     low = name.lower()
     for keys, org in ORG_RULES:
-        if any(k in low for k in keys):
-            return org
+        for k in keys:
+            if re.search(rf"(?<![a-z0-9]){re.escape(k)}(?=$|[^a-z])", low):
+                return org
     return "Other"
 
 
@@ -227,7 +249,6 @@ class ModelNormalizer:
             if ":batch" in mid or ":free" in mid or ":extended" in mid or ":thinking" in mid:
                 continue
             raw_name = m.get("name", "")
-            # OpenRouter names look like "Anthropic: Claude Fable 5.2"
             if ":" in raw_name:
                 org_part, model_part = [p.strip() for p in raw_name.split(":", 1)]
             else:
@@ -251,7 +272,6 @@ class ModelNormalizer:
         text = re.sub(r"\s+", " ", raw_name).strip()
         low = text.lower()
 
-        # Check Epoch exact model_version first
         if low in self.epoch_version_to_group:
             grp, org = self.epoch_version_to_group[low]
             eff_m = EFFORT_PATTERN.search(text)
@@ -260,29 +280,37 @@ class ModelNormalizer:
             cid, disp, canonical_org = self.known_aliases.get(slug, (slug, grp, org))
             return cid, disp, canonical_org, effort, harness_hint, False
 
-        # Detect standalone agent products (no identifiable single base LLM)
         is_agent_product = any(marker in low for marker in AGENT_PRODUCT_MARKERS)
 
-        # Strip provider prefixes like "openrouter/anthropic/" or "Anthropic "
-        cleaned = re.sub(r"^openrouter/[^/]+/", "", text, flags=re.I)
-        cleaned = re.sub(r"^[^/]+/", "", cleaned) if "/" in cleaned and not cleaned.startswith("http") else cleaned
+        # Strip ONLY valid HuggingFace/OpenRouter namespace prefixes (never dates like '(11/25)')
+        cleaned = re.sub(r"^openrouter/[a-z0-9_.-]+/", "", text, flags=re.I)
+        ns_m = re.match(r"^[a-z][a-z0-9_.-]{1,30}/(.+)$", cleaned, flags=re.I)
+        if ns_m and not cleaned.startswith("http"):
+            cleaned = ns_m.group(1)
         cleaned = re.sub(r"\s+Model$", "", cleaned).strip()
 
-        # Handle "Agent + BaseModel" patterns (e.g. "Tianqiong Data Agent + GLM 5.2")
+        # Handle "Agent + BaseModel" patterns (multi-LLM combinations like "X + Opus 4.5 Judge" are agent systems)
         harness = harness_hint
         if " + " in cleaned:
-            left, right = [p.strip() for p in cleaned.split(" + ", 1)]
-            # If right side looks like a known LLM family, right is model and left is harness
-            if infer_organization(right) != "Other":
-                harness = harness or left
-                cleaned = right
-                is_agent_product = False
-            elif infer_organization(left) != "Other":
-                harness = harness or right
-                cleaned = left
-                is_agent_product = False
+            parts = [p.strip() for p in cleaned.split(" + ")]
+            if len(parts) > 2 or "judge" in cleaned.lower():
+                is_agent_product = True
+            else:
+                left, right = parts
+                l_org = infer_organization(left)
+                r_org = infer_organization(right)
+                if l_org != "Other" and r_org != "Other":
+                    is_agent_product = True
+                elif r_org != "Other":
+                    harness = harness or left
+                    cleaned = right
+                    is_agent_product = False
+                elif l_org != "Other":
+                    harness = harness or right
+                    cleaned = left
+                    is_agent_product = False
 
-        # Handle LiveSQLBench patterns like "AntQL 1.1 (Claude Opus 5.5)", "Claude Opus 4.6 (OpenHands CLI)", "OpenCode-Grok4.7"
+        # Handle wrapper patterns like "AntQL 1.1 (Claude Opus 5.5)", "Claude Opus 4.6 (OpenHands CLI)", "OpenCode-Grok4.7"
         if cleaned.lower().startswith("opencode-"):
             harness = harness or "OpenCode"
             cleaned = cleaned[len("opencode-"):].strip()
@@ -299,6 +327,13 @@ class ModelNormalizer:
                 cleaned = inner_clean
                 is_agent_product = False
 
+        # Peel trailing (MM/YY) benchmark date tags cleanly before alias/effort checks
+        cleaned = re.sub(r"\s*\(\d{2}/\d{2}\)\s*$", "", cleaned).strip()
+
+        # Strip precision quantization tags (FP8, NVFP4) separately from reasoning effort
+        while QUANT_PATTERN.search(cleaned):
+            cleaned = QUANT_PATTERN.sub("", cleaned).strip()
+
         # Strip effort/thinking tags only when pre-stripping string is not itself a canonical model ID
         effort: str | None = None
         while True:
@@ -313,16 +348,21 @@ class ModelNormalizer:
                 effort = effort or found.lower()
             cleaned = cleaned[: m.start()].strip()
 
-        cleaned = re.sub(r"\s*\(\d{2}/\d{2}\)\s*$", "", cleaned).strip()
-        cleaned = re.sub(r"\s+\d{4}$", "", cleaned).strip()
-        cleaned = re.sub(r"-\d{8}$", "", cleaned).strip()
-        cleaned = re.sub(r"-preview$", "", cleaned, flags=re.I).strip()
+        if slugify(cleaned) not in self.known_aliases:
+            cleaned = re.sub(r"\s+\d{4}$", "", cleaned).strip()
+            cleaned = re.sub(r"-\d{8}$", "", cleaned).strip()
+        if slugify(cleaned) not in self.known_aliases:
+            cleaned = re.sub(r"-preview$", "", cleaned, flags=re.I).strip()
         cleaned = re.sub(r"-together$", "", cleaned, flags=re.I).strip()
         cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
-        # Strip duplicated org/wrapper prefixes (e.g. "Z.ai GLM-5.2", "CodeArts-GLM-5.1")
-        cleaned = re.sub(r"^(?:CodeArts-|Anthropic\s+|OpenAI\s+|Google\s+|Z\.ai\s+|Grok\s+|DeepSeek\s+|Qwen\s+|Mistral\s+)(?=(?:Claude|Fable|Opus|Sonnet|Haiku|GPT|Gemini|GLM|Grok|DeepSeek|Qwen|Mistral|MiniMax))", "", cleaned, flags=re.I)
-        # Canonicalize known harness spellings
+        # Strip duplicated org/wrapper prefixes while keeping canonical brand prefix intact
+        cleaned = re.sub(
+            r"^(?:CodeArts-|Anthropic\s+|OpenAI\s+|Google\s+|Z\.ai\s+|Grok\s+|DeepSeek\s+|Qwen\s+|Mistral\s+)(?=(?:Claude|Fable|Opus|Sonnet|Haiku|GPT|o1|o3|o4|Gemini|GLM|Grok|DeepSeek|Qwen|Mistral|MiniMax))",
+            "",
+            cleaned,
+            flags=re.I,
+        )
         if harness:
             h_map = {
                 "claude-code": "Claude Code",
@@ -331,7 +371,6 @@ class ModelNormalizer:
                 "antigravity-cli": "Antigravity CLI",
             }
             harness = h_map.get(harness.lower().strip(), harness)
-        # Handle "Anthropic Fable 5" where Fable doesn't start with Anthropic
         if cleaned.lower().startswith("anthropic ") and not cleaned.lower().startswith("anthropic claude"):
             cleaned = "Claude " + cleaned[len("anthropic "):].strip()
 
@@ -341,7 +380,6 @@ class ModelNormalizer:
             return cid, disp, org, effort, harness, is_agent_product
 
         org = infer_organization(cleaned, org_hint)
-        # Prettier display name if all lowercase slug-like
         disp = cleaned
         if disp == disp.lower() and "-" in disp:
             disp = " ".join(w.upper() if w in ("gpt", "glm", "swe") else w.capitalize() for w in disp.split("-"))

@@ -9,15 +9,6 @@ export const DEFAULT_WEIGHTS: Record<CategoryId, number> = {
   security: 10,
 };
 
-export const CATEGORY_LABELS: Record<CategoryId, string> = {
-  repo: "仓库研发",
-  architecture: "架构与构建",
-  systems: "运维构建",
-  sql: "数据库 SQL",
-  performance: "性能与算法",
-  security: "后端安全",
-};
-
 export interface WeightedModelRow extends ModelEntry {
   dynamicScore: number;
   dynamicCi: [number, number];
@@ -102,25 +93,27 @@ export function recomputeRankings(
 
   scored.sort((a, b) => b.dynamicScore - a.dynamicScore);
 
-  // Apply 2-point close-call guard for single-family Estimated models
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = 0; i < scored.length - 1; i++) {
-      const curr = scored[i];
-      const next = scored[i + 1];
-      const currSingleEst =
-        curr.evidence_status === "Estimated" && curr.independent_family_count < 2;
-      const nextSingleEst =
-        next.evidence_status === "Estimated" && next.independent_family_count < 2;
-      if (
-        currSingleEst &&
-        !nextSingleEst &&
-        curr.dynamicScore - next.dynamicScore <= 2.0
-      ) {
-        scored[i] = next;
-        scored[i + 1] = curr;
-        changed = true;
+  // Apply 2-point close-call guard only on overall rankings (preserve pure category ordering on sub-views)
+  if (activeCategory === "overall") {
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let i = 0; i < scored.length - 1; i++) {
+        const curr = scored[i];
+        const next = scored[i + 1];
+        const currSingleEst =
+          curr.evidence_status === "Estimated" && curr.independent_family_count < 2;
+        const nextSingleEst =
+          next.evidence_status === "Estimated" && next.independent_family_count < 2;
+        if (
+          currSingleEst &&
+          !nextSingleEst &&
+          curr.dynamicScore - next.dynamicScore <= 2.0
+        ) {
+          scored[i] = next;
+          scored[i + 1] = curr;
+          changed = true;
+        }
       }
     }
   }
