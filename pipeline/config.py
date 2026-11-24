@@ -197,25 +197,25 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         description="Vals AI 统一沙盒与成本测量的 SWE-bench Verified 独立复测",
         tier="S",
     ),
-    # A：真实仓库写测试，任务类型单一；经 BenchLM 转抓
+    # A：真实仓库写测试，Scale Labs 官方统一评测（经 BenchLM 采集）
     "scale_swe_atlas_testwriting": BenchmarkSpec(
         id="scale_swe_atlas_testwriting",
         name="SWE Atlas · Test Writing",
         category="repo",
         source_family="Scale Labs",
         source_url="https://labs.scale.com/leaderboard/swe-atlas",
-        default_source_type="third_party",
+        default_source_type="benchmark_run",
         description="面向已有代码库提交测试补丁与回归捕获的仓库单元测试基准",
         tier="A",
     ),
-    # A：真实仓库理解问答，不产出补丁；经 BenchLM 转抓
+    # A：真实仓库理解问答，不产出补丁，Scale Labs 官方统一评测（经 BenchLM 采集）
     "scale_swe_atlas_qna": BenchmarkSpec(
         id="scale_swe_atlas_qna",
         name="SWE Atlas · Codebase QnA",
         category="repo",
         source_family="Scale Labs",
         source_url="https://labs.scale.com/leaderboard/swe-atlas",
-        default_source_type="third_party",
+        default_source_type="benchmark_run",
         description="仓库理解：跨文件运行分析与代码库实现机制全局问答",
         tier="A",
     ),
@@ -276,7 +276,7 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         description="行为重建：依据行为说明与已编译 CLI 在无源码参考下从零交付兼容系统程序",
         tier="S",
     ),
-    # S：只凭可观测行为端到端重实现完整命令行工具
+    # A（原 S）：无源码 CLI 重建，但仅约 9 个大任务、单次抽样标准误达 ±8%~12%，按题量小半合成任务归 A 档
     "mirrorcode": BenchmarkSpec(
         id="mirrorcode",
         name="MirrorCode",
@@ -284,8 +284,8 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         source_family="Epoch / METR",
         source_url="https://epoch.ai/MirrorCode",
         default_source_type="benchmark_run",
-        description="长程系统重建：仅凭可观测行为端到端重实现完整命令行系统工具",
-        tier="S",
+        description="长程系统重建：仅凭可观测行为端到端重实现完整命令行系统工具（含任务级抽样误差折算）",
+        tier="A",
     ),
     # A：跨语言迁移，范围限于 CLI、COBOL→Java 等场景
     "vals_code_migration": BenchmarkSpec(
@@ -298,14 +298,14 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         description="跨语言工程迁移基准（CLI 及 COBOL→Java 等端到端行为验收）",
         tier="A",
     ),
-    # A：真实大型工程重构，任务类型单一；经 BenchLM 转抓
+    # A：真实大型工程重构，Scale Labs 官方统一评测（经 BenchLM 采集）
     "scale_swe_atlas_refactoring": BenchmarkSpec(
         id="scale_swe_atlas_refactoring",
         name="SWE Atlas · Refactoring",
         category="architecture",
         source_family="Scale Labs",
         source_url="https://labs.scale.com/leaderboard/swe-atlas",
-        default_source_type="third_party",
+        default_source_type="benchmark_run",
         description="真实大型工程跨文件组件与依赖重构演进（兼顾结构整理与行为稳定）",
         tier="A",
     ),
@@ -389,7 +389,7 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         description="Artificial Analysis 独立执行的 59 个 Kubernetes 真实生产快照 SRE 故障根因定位基准",
         tier="A",
     ),
-    # B：纯 MCP 工具调用编排，辅助参考；经 BenchLM 转抓
+    # 只作参考：纯 MCP 工具调用编排，非容器/SRE 运维实操，不进 IRT 主分；经 BenchLM 转抓
     "mcpatlas": BenchmarkSpec(
         id="mcpatlas",
         name="MCP Atlas",
@@ -397,11 +397,12 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         source_family="Scale Labs",
         source_url="https://labs.scale.com/leaderboard/mcp_atlas",
         default_source_type="third_party",
-        description="多 MCP 工具工作流编排调用（辅助协议参考，不单授系统核心资格）",
+        description="多 MCP 工具工作流编排调用（协议调用参考，保留台账展示不进运维 IRT 主分）",
         tier="B",
+        scored=False,
         core=False,
     ),
-    # B：函数调用，辅助参考
+    # 只作参考：纯函数调用协议，非容器/SRE 运维实操，不进 IRT 主分
     "bfcl_v4": BenchmarkSpec(
         id="bfcl_v4",
         name="BFCL v4",
@@ -409,8 +410,9 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         source_family="Berkeley BFCL",
         source_url="https://gorilla.cs.berkeley.edu/data_overall.csv",
         default_source_type="benchmark_run",
-        description="Berkeley 函数调用与多轮结构化工具交互基准（辅助工具参考，不单授系统核心资格）",
+        description="Berkeley 函数调用与多轮结构化工具交互基准（工具协议参考，保留台账展示不进运维 IRT 主分）",
         tier="B",
+        scored=False,
         core=False,
     ),
     # --- Database & SQL ---
@@ -552,7 +554,7 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         scored=False,
         core=False,
     ),
-    # 只展示：原始加速倍数，不进主分
+    # A：真实 LLM 推理服务端优化加速比基准（Hill 对数加速比映射入模并按抽样标准误加权，台账保留原始 × 倍数）
     "inferencebench": BenchmarkSpec(
         id="inferencebench",
         name="InferenceBench",
@@ -560,10 +562,10 @@ BENCHMARK_REGISTRY: dict[str, BenchmarkSpec] = {
         source_family="InferenceBench",
         source_url="https://inferencebench.ai/",
         default_source_type="benchmark_run",
-        description="LLM 推理服务端综合优化加速倍数（原始倍数如 10.27×，含异构 Prompt 暂只展示对照不进 IRT 主分）",
+        description="LLM 推理服务端综合优化加速比基准（Prefill / Decode / 吞吐三场景，对数加速比映射入模并保留原始 × 倍数）",
         tier="A",
-        scored=False,
-        core=False,
+        scored=True,
+        core=True,
     ),
     # 只作对照：复合指数，含非代码维度，不进主分
     "aa_engineering": BenchmarkSpec(

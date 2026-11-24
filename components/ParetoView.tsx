@@ -18,7 +18,7 @@ interface ParetoViewProps {
   onSelectModel: (model: WeightedModelRow, originTop?: number) => void;
 }
 
-const PRICE_TICKS = [0.1, 0.5, 1, 3, 10, 30, 80];
+const PRICE_TICKS = [0.05, 0.2, 1, 3, 10, 30, 80];
 const SCORE_TICKS = [40, 55, 70, 85, 95];
 
 export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps) {
@@ -48,7 +48,11 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
       }));
   }, [ranked, openOnly, longCtxOnly]);
 
-  const frontierIds = useMemo(() => computeParetoFrontier(points), [points]);
+  // 数据不全的模型照画散点（空心圆），但不参与帕累托最优前沿连线与卡片推荐
+  const frontierIds = useMemo(
+    () => computeParetoFrontier(points.filter((p) => p.model.dynamicComplete)),
+    [points]
+  );
 
   const frontierSorted = useMemo(
     () => points.filter((p) => frontierIds.has(p.id)).sort((a, b) => a.price - b.price),
@@ -62,13 +66,13 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
   const PAD_T = 30;
   const PAD_B = 46;
 
-  const minLog = Math.log10(0.05);
+  const minLog = Math.log10(0.03);
   const maxLog = Math.log10(100);
   const minScore = 35;
   const maxScore = 98;
 
   const xOf = (price: number) => {
-    const clamped = Math.max(0.05, Math.min(100, price));
+    const clamped = Math.max(0.03, Math.min(100, price));
     const ratio = (Math.log10(clamped) - minLog) / (maxLog - minLog);
     return PAD_L + ratio * (W - PAD_L - PAD_R);
   };
@@ -98,9 +102,11 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
       const candidates: { lx: number; ly: number; anchor: "start" | "end"; bx: number; by: number }[] = [
         { lx: cx + 9, ly: cy + 3, anchor: "start", bx: cx + 9, by: cy - 8 },
         { lx: cx - 9, ly: cy - 6, anchor: "end", bx: cx - 9 - w, by: cy - 17 },
-        { lx: cx + 9, ly: cy + 14, anchor: "start", bx: cx + 9, by: cy + 3 },
-        { lx: cx - 9, ly: cy + 12, anchor: "end", bx: cx - 9 - w, by: cy + 1 },
+        { lx: cx + 9, ly: cy + 15, anchor: "start", bx: cx + 9, by: cy + 4 },
         { lx: cx + 9, ly: cy - 10, anchor: "start", bx: cx + 9, by: cy - 21 },
+        { lx: cx - 9, ly: cy + 12, anchor: "end", bx: cx - 9 - w, by: cy + 1 },
+        { lx: cx + 9, ly: cy + 26, anchor: "start", bx: cx + 9, by: cy + 15 },
+        { lx: cx + 9, ly: cy - 22, anchor: "start", bx: cx + 9, by: cy - 33 },
       ];
       let chosen = candidates[0];
       for (const cand of candidates) {
@@ -132,8 +138,8 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
           </h1>
           <p className="mt-1.5 max-w-2xl text-xs text-[var(--color-muted-foreground)] sm:text-sm">
             {tx(
-              "横轴为 OpenRouter 实时 Input/Output 均价（$/1M Tokens，对数坐标），纵轴为 BackendIndex 能力分。悬停图表节点或下方前沿卡片可双向高亮联动。",
-              "Blended Input/Output API price ($/1M tokens, log scale) vs. BackendIndex score. Hover nodes or cards below for cross-highlighting."
+              "横轴为 OpenRouter 3:1 输入/输出加权均价（$/1M Tokens，对数坐标），纵轴为 BackendIndex 能力分；数据不全模型以空心圆展示、不计入前沿线。",
+              "3:1 Input/Output weighted API price ($/1M tokens, log scale) vs. BackendIndex score; incomplete models appear as hollow rings outside the frontier."
             )}
           </p>
         </div>
@@ -218,7 +224,7 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
             fill="var(--color-muted-foreground)"
             className="text-[11px]"
           >
-            {tx("Blended API 价格（$/1M Tokens · 对数坐标）", "Blended API Price ($/1M Tokens · Log Scale)")}
+            {tx("API 综合价格（3:1 入/出 · $/1M Tokens · 对数坐标）", "3:1 Input/Output API Price ($/1M Tokens · Log Scale)")}
           </text>
           <text
             x={14}
@@ -246,6 +252,7 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
             const cx = xOf(p.price);
             const cy = yOf(p.score);
             const isFrontier = frontierIds.has(p.id);
+            const isIncomplete = !p.model.dynamicComplete;
             const isHovered = hoveredId === p.id;
             const dotColor = isFrontier
               ? "var(--color-primary)"
@@ -269,9 +276,9 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
                   cx={cx}
                   cy={cy}
                   r={isHovered ? 7 : isFrontier ? 5.2 : 4}
-                  fill={dotColor}
-                  stroke="var(--color-fill)"
-                  strokeWidth={1.5}
+                  fill={isIncomplete ? "var(--color-fill)" : dotColor}
+                  stroke={isIncomplete ? dotColor : "var(--color-fill)"}
+                  strokeWidth={isIncomplete ? 1.75 : 1.5}
                 />
                 {isFrontier &&
                   (() => {
@@ -353,6 +360,10 @@ export function ParetoView({ snapshot, weights, onSelectModel }: ParetoViewProps
             <span className="inline-flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-full bg-[var(--color-faint)]" />
               {tx("闭源 API 模型", "Proprietary API")}
+            </span>
+            <span className="inline-flex items-center gap-1.5">
+              <span className="h-2.5 w-2.5 rounded-full border-[1.75px] border-[var(--color-muted-foreground)] bg-[var(--color-fill)]" />
+              {tx("数据不全（不进前沿线）", "Incomplete (excluded from frontier)")}
             </span>
           </div>
           <span className="text-[11px] text-[var(--color-faint)]">

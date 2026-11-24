@@ -28,21 +28,26 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 HEADERS = {"User-Agent": "BackendIndex-ETL/1.0"}
 DEFAULT_TTL_SEC = 12 * 3600
+OFFLINE_CACHE_ONLY = False
 
 
 def cached_get(url: str, refresh: bool = False, binary: bool = False) -> bytes:
-    """Fetch URL with local disk cache to avoid hammering upstream servers."""
+    """Fetch URL with local disk cache; fall back to stale cache if offline and not forcing refresh."""
     digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
     ext = ".bin" if binary else ".txt"
     cache_path = CACHE_DIR / f"{digest}{ext}"
     if not refresh and cache_path.exists():
-        age = time.time() - cache_path.stat().st_mtime
-        if age < DEFAULT_TTL_SEC:
+        if OFFLINE_CACHE_ONLY or (time.time() - cache_path.stat().st_mtime) < DEFAULT_TTL_SEC:
             return cache_path.read_bytes()
-    resp = requests.get(url, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    cache_path.write_bytes(resp.content)
-    return resp.content
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        cache_path.write_bytes(resp.content)
+        return resp.content
+    except requests.RequestException:
+        if not refresh and cache_path.exists():
+            return cache_path.read_bytes()
+        raise
 
 
 def cached_text(url: str, refresh: bool = False) -> str:
@@ -150,6 +155,10 @@ def make_obs(
         raw_model, org_hint=org_hint, harness_hint=harness
     )
     resolved_url = _valid_http_url(source_url) or spec.source_url
+    obs_extra = dict(extra) if extra else {}
+    if margin is not None and margin > 0 and "stderr" not in obs_extra:
+        # 上游 '± X%' 区间半宽折算为 1 倍标准误 SE，与 CSV 自带 stderr 口径统一
+        obs_extra["stderr"] = round(margin / 1.96, 5)
     return Observation(
         raw_model_name=raw_model,
         canonical_model_id=cid,
@@ -172,7 +181,7 @@ def make_obs(
         duration_sec=duration_sec,
         margin=margin,
         is_agent_product=force_agent_product or is_agent,
-        extra=extra or {},
+        extra=obs_extra,
     )
 
 
@@ -208,8 +217,9 @@ def fetch_openrouter_and_aa(
         except (ValueError, TypeError):
             prompt_1m = comp_1m = cache_1m = None
 
+        # 按行业通用 3:1 输入/输出配比计算 API 综合均价
         blended = (
-            round((prompt_1m + comp_1m) / 2.0, 4)
+            round((3.0 * prompt_1m + comp_1m) / 4.0, 4)
             if prompt_1m is not None and comp_1m is not None
             else None
         )
@@ -376,6 +386,16 @@ def fetch_epoch_archive(
                     tok_val = float(r["Tokens per task"])
                 except ValueError:
                     pass
+            stderr_val = None
+            if r.get("stderr"):
+                try:
+                    stderr_val = float(r["stderr"])
+                    if stderr_val > 1.0:
+                        stderr_val /= 100.0
+                except ValueError:
+                    stderr_val = None
+            if stderr_val and stderr_val > 0:
+                extra["stderr"] = round(stderr_val, 5)
 
             obs = make_obs(
                 norm,
@@ -391,6 +411,7 @@ def fetch_epoch_archive(
                 cost_usd=cost_val,
                 cost_unit="per_task",
                 tokens=tok_val,
+                margin=round(1.96 * stderr_val, 4) if stderr_val and stderr_val > 0 else None,
                 extra=extra,
             )
             if bench_id == "cybench":
@@ -589,6 +610,26 @@ def fetch_vals(norm: ModelNormalizer, refresh: bool = False) -> list[Observation
     return obs_list
 
 
+# 开放提交 SQL 榜单上允许作为基座模型成绩入模的官方默认脚手架与通用编码 CLI；
+# 其余第三方定制多智能体竞赛刷榜系统（如 QUVI-3、AntQL、Tianqiong、Prism Swarm、AutoLink 等）归为 Agent 产品
+_STANDARD_SQL_HARNESSES = frozenset(
+    {
+        None,
+        "",
+        "Spider-Agent",
+        "Spider-Agent-Snow",
+        "Spider-Agent-DBT",
+        "OpenHands",
+        "OpenHands CLI",
+        "Claude Code",
+        "OpenCode",
+        "Codex",
+        "Codex CLI",
+        "Mini-SWE-agent",
+    }
+)
+
+
 def fetch_livesqlbench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
     """Parse LiveSQLBench-Base-Full v1 table, capturing per-row links and reported badges."""
     html = cached_text("https://livesqlbench.ai/", refresh=refresh)
@@ -646,7 +687,7 @@ def fetch_livesqlbench(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
             cost_usd=cost,
             cost_unit="per_task",
         )
-        if infer_organization(obs.display_name) == "Other":
+        if infer_organization(obs.display_name) == "Other" or obs.harness not in _STANDARD_SQL_HARNESSES:
             obs.is_agent_product = True
         obs_list.append(obs)
     return obs_list
@@ -757,7 +798,11 @@ def fetch_spider2(norm: ModelNormalizer, refresh: bool = False) -> list[Observat
                 source_type=stype,
                 source_url=aff_url or next((u for u in paper_links if u), None),
             )
-            if "+" not in method_raw and infer_organization(obs.display_name) == "Other":
+            if (
+                "+" not in method_raw
+                or infer_organization(obs.display_name) == "Other"
+                or obs.harness not in _STANDARD_SQL_HARNESSES
+            ):
                 obs.is_agent_product = True
             obs_list.append(obs)
     return obs_list
@@ -1149,12 +1194,12 @@ def fetch_benchlm_supplements(norm: ModelNormalizer, refresh: bool = False) -> l
             if not model_name or rate is None:
                 continue
 
-            who_text = (
-                cells[3].get_text(" ", strip=True)
-                if has_who_col and len(cells) > 3
-                else cells[1].get_text(" ", strip=True)
-            )
-            fam, stype = _parse_benchlm_provenance(who_text, spec.source_family, spec.default_source_type)
+            if has_who_col and len(cells) > 3:
+                fam, stype = _parse_benchlm_provenance(
+                    cells[3].get_text(" ", strip=True), spec.source_family, spec.default_source_type
+                )
+            else:
+                fam, stype = spec.source_family, spec.default_source_type
 
             obs_list.append(
                 make_obs(
@@ -1248,7 +1293,7 @@ def fetch_tinybird_sql(norm: ModelNormalizer, refresh: bool = False) -> list[Obs
             or "-latest" in mod_low
             or mod_low.endswith((":free", ":beta", ":extended"))
             or total_q <= 0
-            or succ_q <= 0
+            or succ_q < 0.5 * total_q
             # eval.ts defaults exactnessScore=0 when validationMap lacks a record despite successful queries
             or float(exactness) <= 0.0
         ):
@@ -1535,13 +1580,17 @@ def _extract_js_object_array(js_text: str, marker_regex: str) -> list[str]:
 
 
 def fetch_inferencebench(norm: ModelNormalizer, refresh: bool = False) -> list[Observation]:
-    """Fetch InferenceBench aggregate speedup multipliers (scored=False reference alongside AlgoTune)."""
+    """Fetch InferenceBench speedup multipliers and map relative gain onto (0, 1) via log-odds Hill curve (K=5.0, k=2)."""
     index_url = "https://inferencebench.ai/"
     html = cached_text(index_url, refresh=refresh)
     script_m = re.search(r'src=["\'](script\.js[^"\']*)["\']', html)
     script_path = script_m.group(1) if script_m else "script.js"
     js_url = f"https://inferencebench.ai/{script_path.lstrip('/')}"
     js_text = cached_text(js_url, refresh=refresh)
+
+    # Hill (k=2, K=5.0): 1.0x baseline -> 0, 6.0x median -> 0.50, unbounded v -> <1.0; logit(y) = 2*ln((v-1)/5)
+    k_half = 5.0
+    k_sq = k_half * k_half
 
     # Prefer prompt v1.0.1 (†) runs when both old (v1.0) and new prompt versions exist for a model+effort
     best_by_key: dict[tuple[str, str | None], tuple[tuple[int, float], Observation]] = {}
@@ -1565,18 +1614,25 @@ def fetch_inferencebench(norm: ModelNormalizer, refresh: bool = False) -> list[O
         is_v101 = ("†" in mark) or ("prompt v1.0.1" in scaffold.lower())
         harness_clean = re.sub(r"\s*·\s*prompt\s+v[\d.]+", "", scaffold, flags=re.I).strip() or None
 
+        gain = max(val - 1.0, 0.01)
+        g_sq = gain * gain
+        mapped_rate = g_sq / (g_sq + k_sq)
+        mapped_stderr = (2.0 * gain * k_sq / ((g_sq + k_sq) ** 2)) * sem
+
         obs = make_obs(
             norm,
             "inferencebench",
             raw_model,
-            0.0,
+            mapped_rate,
             f"{val:.2f}×",
             harness=harness_clean,
             source_url=index_url,
+            margin=round(1.96 * mapped_stderr, 4),
             extra={
                 "raw_value": round(val, 4),
                 "raw_unit": "speedup_x",
                 "sem": round(sem, 3),
+                "stderr": round(mapped_stderr, 4),
                 "prompt_version": "v1.0.1" if is_v101 else "v1.0",
             },
         )

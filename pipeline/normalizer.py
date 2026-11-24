@@ -15,19 +15,29 @@ ORG_RULES: list[tuple[tuple[str, ...], str]] = [
     (("kimi", "moonshot"), "Moonshot AI"),
     (("grok", "xai", "x-ai"), "xAI"),
     (("llama", "meta", "muse"), "Meta"),
-    (("mistral", "codestral", "devstral", "pixtral"), "Mistral AI"),
+    (("mistral", "mixtral", "codestral", "devstral", "pixtral"), "Mistral AI"),
     (("minimax",), "MiniMax"),
     (("ernie", "baidu"), "Baidu"),
     (("doubao", "seed", "bytedance"), "ByteDance"),
     (("mimo", "xiaomi"), "Xiaomi"),
     (("stepfun",), "StepFun"),
-    (("ling", "inclusion", "inclusionai"), "inclusionAI"),
+    (("ling", "llada", "llada2", "inclusion", "inclusionai"), "inclusionAI"),
     (("mercury", "inception"), "Inception"),
     (("inkling", "thinking"), "Thinking Machines"),
     (("hy", "hunyuan", "tencent"), "Tencent"),
     (("nova", "amazon"), "Amazon"),
     (("copilot", "phi", "mai", "microsoft"), "Microsoft"),
     (("sakana", "fugu"), "Sakana AI"),
+    (("laguna", "poolside"), "Poolside"),
+    (("ornith", "deepreinforce"), "Ornith AI"),
+    (("beam", "reflection"), "Reflection AI"),
+    (("nemotron", "nvidia"), "NVIDIA"),
+    (("granite", "ibm"), "IBM"),
+    (("lfm", "lfm2", "lfm3", "liquid", "liquidai"), "LiquidAI"),
+    (("longcat", "meituan"), "Meituan"),
+    (("ripple", "ricursive"), "Ricursive Intelligence"),
+    (("dots", "dots3"), "Dots Studio"),
+    (("spark", "iflytek"), "SparkLLM"),
 ]
 
 # Explicit canonical alias overrides (normalized slug -> (canonical_id, display_name, org))
@@ -172,11 +182,15 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "glm-5-1": ("glm-5-1", "GLM-5.1", "Z.ai"),
     "mimo-v2-6-pro": ("mimo-v2-6-pro", "MiMo-V2.6-Pro", "Xiaomi"),
     "mimo-v2-6-flash": ("mimo-v2-6-flash", "MiMo-V2.6-Flash", "Xiaomi"),
+    # OpenRouter/BenchLM 写作 Beam 1.0 501B-A23B（挂同一 AA 指数），Vals/AA 写作 Beam 1.0
+    "beam-1-0": ("beam-1-0", "Beam 1.0", "Reflection AI"),
+    "beam-1-0-501b-a23b": ("beam-1-0", "Beam 1.0", "Reflection AI"),
 }
 
 EFFORT_PATTERN = re.compile(
     r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|reasoning|ultra|unknown)\s*\)"
     r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking|reasoning|ultra)\s*\]"
+    r"|,\s*(xhigh|high|medium|low|max|minimal|none|promax|ultra|unknown)"
     r"|_(xhigh|high|medium|low|max|minimal|none|promax|ultra|unknown)"
     r"|-(xhigh|high|medium|low|max)(?=$|-)"
     r"|\s*-\s*thinking(?:-\d+k)?)$",
@@ -264,18 +278,37 @@ def infer_organization(name: str, fallback: str | None = None) -> str:
     """Infer model creator organization from name or fallback without substring collisions."""
     if fallback and fallback.strip() and fallback.strip().lower() not in ("unknown", "other"):
         fb = fallback.strip()
-        if "Google" in fb:
+        low_fb = fb.lower()
+        if "google" in low_fb:
             return "Google"
-        if "Moonshot" in fb or fb.lower() == "kimi":
+        if "moonshot" in low_fb or low_fb == "kimi":
             return "Moonshot AI"
-        if fb.lower() == "qwen":
+        if low_fb == "qwen":
             return "Alibaba"
-        if "Zhipu" in fb or fb == "Z.ai":
+        if "zhipu" in low_fb or fb == "Z.ai":
             return "Z.ai"
-        if "SpaceXSI" in fb or fb.lower() == "xai":
+        if "spacexsi" in low_fb or low_fb == "xai":
             return "xAI"
-        if fb.lower().startswith("meta"):
+        if low_fb.startswith("meta"):
             return "Meta"
+        if "mistral" in low_fb:
+            return "Mistral AI"
+        if "reflection" in low_fb:
+            return "Reflection AI"
+        if "ricursive" in low_fb:
+            return "Ricursive Intelligence"
+        if "deepreinforce" in low_fb or "ornith" in low_fb:
+            return "Ornith AI"
+        if "poolside" in low_fb:
+            return "Poolside"
+        if "liquid" in low_fb:
+            return "LiquidAI"
+        if "nvidia" in low_fb:
+            return "NVIDIA"
+        if "ibm" in low_fb:
+            return "IBM"
+        if "meituan" in low_fb:
+            return "Meituan"
         return fb
     low = name.lower()
     for keys, org in ORG_RULES:

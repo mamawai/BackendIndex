@@ -19,6 +19,7 @@ from config import (
     TIER_WEIGHTS,
     freshness_factor,
 )
+import fetchers
 from fetchers import (
     fetch_aider_polyglot,
     fetch_autobaxbench_hard,
@@ -48,7 +49,7 @@ from fetchers import (
     fetch_tinybird_sql,
     fetch_vals,
 )
-from irt_scorer import MIN_COVERAGE, score_all_models
+from irt_scorer import MIN_COVERAGE, RELIABILITY_TAU, score_all_models
 from models import ModelMetadata, Observation
 from normalizer import ModelNormalizer, harness_family
 
@@ -132,7 +133,8 @@ def _primary_harness(model_obs: list[Observation]) -> str | None:
     return min(benches, key=lambda f: (-len(benches[f]), -runs[f], f))
 
 
-def run_pipeline(refresh: bool = False) -> Path:
+def run_pipeline(refresh: bool = False, offline: bool = False) -> Path:
+    fetchers.OFFLINE_CACHE_ONLY = offline
     norm = ModelNormalizer()
     meta_map: dict[str, ModelMetadata] = {}
     all_obs: list[Observation] = []
@@ -234,6 +236,7 @@ def run_pipeline(refresh: bool = False) -> Path:
                 "display": obs.raw_display,
                 "harness": obs.harness,
                 "effort": obs.effort,
+                "source_family": obs.source_family,
                 "source_type": obs.source_type,
                 "date": obs.date,
                 # 这条成绩在拟合里实际用的权重，方法论页的计分示例直接展示它
@@ -332,6 +335,7 @@ def run_pipeline(refresh: bool = False) -> Path:
         "method": "BackendIndex-2PL-IRT-v3",
         "rules": {
             "min_coverage": MIN_COVERAGE,
+            "reliability_tau": RELIABILITY_TAU,
             "fresh_days": FRESH_DAYS,
             "stale_days": STALE_DAYS,
             "stale_factor": STALE_FACTOR,
@@ -412,8 +416,9 @@ def run_pipeline(refresh: bool = False) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Sync backend benchmarks & compute 2PL IRT scores.")
     parser.add_argument("--refresh", action="store_true", help="Ignore local HTTP cache and fetch fresh data.")
+    parser.add_argument("--offline", action="store_true", help="Use existing local HTTP cache without network requests.")
     args = parser.parse_args()
-    run_pipeline(refresh=args.refresh)
+    run_pipeline(refresh=args.refresh, offline=args.offline)
 
 
 if __name__ == "__main__":

@@ -58,6 +58,7 @@ export function LeaderboardView({
   const [search, setSearch] = useState("");
   const [openOnly, setOpenOnly] = useState(false);
   const [supportedOnly, setSupportedOnly] = useState(false);
+  const [completeOnly, setCompleteOnly] = useState(false);
   const [showWeights, setShowWeights] = useState(false);
   const [showAllRows, setShowAllRows] = useState(false);
   const minCov = snapshot.rules.min_coverage;
@@ -81,13 +82,15 @@ export function LeaderboardView({
     return ranked.filter((m) => {
       if (openOnly && !m.is_open_weight) return false;
       if (supportedOnly && m.evidence_status !== "Supported") return false;
+      // 只隐藏数据不全的行，保留原有同榜 dynamicRank 不重新编号
+      if (view === "overall" && completeOnly && !m.dynamicComplete) return false;
       if (q) {
         const hay = `${m.display_name} ${m.organization} ${m.harnesses.join(" ")}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
     });
-  }, [ranked, openOnly, supportedOnly, search]);
+  }, [ranked, openOnly, supportedOnly, completeOnly, view, search]);
 
   const getKeyBenchmarksForCategory = (m: WeightedModelRow, cat: CategoryId) => {
     return Object.entries(m.representative_benchmarks)
@@ -121,8 +124,14 @@ export function LeaderboardView({
               )
             : tx("该维度代表基准实测", "Key Measured Benchmarks")}
         </th>
-        <th className="hidden text-right sm:table-cell">
-          {tx("API 均价 · 上下文", "Blended Price · Ctx")}
+        <th
+          className="hidden text-right sm:table-cell"
+          title={tx(
+            "按 3:1 输入/输出配比计算的每百万 Token API 综合单价",
+            "3:1 input/output weighted API price per 1M tokens"
+          )}
+        >
+          {tx("API 均价 (3:1) · 上下文", "3:1 Price · Ctx")}
         </th>
         <th className="w-20 text-right">{tx("溯源", "Ledger")}</th>
       </tr>
@@ -137,15 +146,32 @@ export function LeaderboardView({
     const incomparable = new Set(m.incomparable_categories ?? []);
     const incomplete = view === "overall" && !m.dynamicComplete;
     const incompleteNote = incomplete ? describeIncomplete(m, minCov, catLabel, tx, true) : null;
+    const guardNote = m.dynamicGuarded
+      ? m.dynamicGuardReason === "single_benchmark"
+        ? tx(
+            "2 分保护：该维度仅测 1 项基准的模型不排在 2 分以内的多基准实测模型之前",
+            "2-pt guard: single-benchmark entries in this dimension do not outrank multi-benchmark models within 2.0 pts"
+          )
+        : tx(
+            "2 分保护：单一来源的 Estimated 模型不排在 2 分以内的多方实测模型之前",
+            "2-pt guard: single-source Estimated models do not outrank multi-source models within 2.0 pts"
+          )
+      : null;
+    const rankTooltip = [incompleteNote, guardNote].filter(Boolean).join(tx("；", "; ")) || undefined;
 
     return (
       // Anchor table rows by rank slot so scores roll and CI bars glide in place across tabs
       <tr key={key} onClick={(e) => onSelectModel(m, e.currentTarget.getBoundingClientRect().top)}>
         <td
           className="font-mono text-xs text-[var(--color-muted-foreground)] tabular-nums"
-          title={incompleteNote ?? undefined}
+          title={rankTooltip}
         >
-          {incomplete ? `≈${m.dynamicRank}` : m.dynamicRank}
+          <span>{incomplete ? `≈${m.dynamicRank}` : m.dynamicRank}</span>
+          {guardNote && (
+            <span className="ml-0.5 text-[10px] text-[var(--color-warning)]" aria-hidden="true">
+              ↓
+            </span>
+          )}
         </td>
 
         <td>
@@ -197,14 +223,18 @@ export function LeaderboardView({
               </div>
             </div>
             {incomplete ? (
-              <span className="tag w" title={incompleteNote ?? undefined}>
+              <span className="tag w" title={rankTooltip}>
                 <i />
                 {tx("数据不全", "Incomplete")}
               </span>
             ) : (
-              <span className={`tag ${m.evidence_status === "Supported" ? "g" : "w"}`}>
+              <span
+                className={`tag ${m.evidence_status === "Supported" ? "g" : "w"}`}
+                title={m.dynamicGuardReason === "single_source" ? guardNote ?? undefined : undefined}
+              >
                 <i />
                 {m.evidence_status}
+                {m.dynamicGuardReason === "single_source" ? " · 2pt" : ""}
               </span>
             )}
           </div>
@@ -264,9 +294,10 @@ export function LeaderboardView({
               {view !== "overall" && singleBench.has(view) && (
                 <span
                   className="tag w"
-                  title={tx("这个维度只有 1 项基准，分数参考价值有限", "Only one benchmark in this dimension")}
+                  title={guardNote ?? tx("这个维度只有 1 项基准，分数参考价值有限", "Only one benchmark in this dimension")}
                 >
                   {tx("单基准", "1 bmk")}
+                  {m.dynamicGuardReason === "single_benchmark" ? " · 2pt" : ""}
                 </span>
               )}
             </div>
@@ -368,6 +399,21 @@ export function LeaderboardView({
             >
               {tx("仅 Supported", "Supported Only")}
             </button>
+
+            {view === "overall" && (
+              <button
+                type="button"
+                aria-pressed={completeOnly}
+                onClick={() => setCompleteOnly((v) => !v)}
+                title={tx(
+                  "隐藏数据不全的模型，保留原有同榜名次",
+                  "Hide incomplete models while keeping their original board ranks"
+                )}
+                className="chip"
+              >
+                {tx("仅数据完整", "Complete Only")}
+              </button>
+            )}
 
             {view === "overall" && (
               <button

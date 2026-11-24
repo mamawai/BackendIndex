@@ -85,8 +85,8 @@ export function MethodologyView({ snapshot }: MethodologyViewProps) {
           </h3>
           <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
             {tx(
-              "每个维度单独用边际最大似然拟合两参数 IRT，估出各基准的难度、区分度和模型能力，只用这个维度自己的成绩，不从其它维度借分。同一维度里，两个基准至少有 3 个共同模型才算能放在一起比；不连通时只让证据权重最大的那组计分，其余组的成绩留在台账里、标为“不可比”，不硬排。各维度再用全部共同模型按测量精度加权（并补偿单基准后验收缩）对齐到仓库研发的刻度，映射为 0–100 分。",
-              "Each dimension gets its own 2PL IRT fit (marginal maximum likelihood) using only that dimension's scores — no borrowing across dimensions. Two benchmarks are comparable only if at least 3 models took both; when a dimension splits, only the group with the most evidence weight is scored and the rest stay in the ledger as “not comparable”. Dimensions are then linked onto the Repo scale across all shared models weighted by measurement precision (accounting for posterior variance) and mapped to 0–100."
+              "每个维度单独用边际最大似然拟合两参数 IRT（区分度限制在 0.25–1.45，防止稀疏维度里单个小基准靠高斜率垄断权重），只用这个维度自己的成绩，不从其它维度借分。同一维度里，两个基准至少有 3 个共同模型才算能放在一起比；不连通时只让证据权重最大的那组计分，其余组的成绩留在台账里、标为“不可比”，不硬排。各维度再用全部共同模型按测量精度加权（并补偿单基准后验收缩）对齐到仓库研发的刻度，映射为 0–100 分；单维度视图下仅测 1 项基准的模型受 2 分邻近保护，不越过 2 分以内的多基准模型。",
+              "Each dimension gets its own 2PL IRT fit via marginal maximum likelihood (with discrimination bounded to 0.25–1.45 so no single benchmark can monopolize Fisher information via a²), using only that dimension's scores. Two benchmarks are comparable only if at least 3 models took both; disconnected groups stay in the ledger as “not comparable”. Dimensions are linked onto the Repo scale weighted by measurement precision (accounting for posterior shrinkage) and mapped to 0–100; on single-dimension tabs, 1-benchmark entries do not outrank multi-benchmark models within 2.0 points."
             )}
           </p>
         </div>
@@ -100,23 +100,23 @@ export function MethodologyView({ snapshot }: MethodologyViewProps) {
           </h3>
           <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
             {tx(
-              `档位只看题目本身：S ×${tw.S} / A ×${tw.A} / B ×${tw.B}。来源：维护方实测、独立复测 ×${sw.benchmark_run}，厂商自报、第三方转引 ×${sw.lab_reported}。新鲜度：${rules.fresh_days} 天内有新评测或新模型上榜记 ×1.0，之后线性降到第 ${rules.stale_days} 天的 ×${rules.stale_factor}；官方已归档的直接 ×${rules.stale_factor}。同题集子榜拆分权重，单个维度内单一来源占比封顶 40%–45%。`,
-              `Tier reflects the benchmark itself: S ×${tw.S} / A ×${tw.A} / B ×${tw.B}. Provenance: maintainer or independent runs ×${sw.benchmark_run}, lab-reported or third-party ×${sw.lab_reported}. Freshness: ×1.0 if new runs or new models appeared within ${rules.fresh_days} days, decaying linearly to ×${rules.stale_factor} at ${rules.stale_days} days; archived boards ×${rules.stale_factor}. Shared-question subsets split weight; one source family is capped at 40–45% per dimension.`
+              `档位只看题目本身：S ×${tw.S} / A ×${tw.A} / B ×${tw.B}。来源：维护方实测、独立复测 ×${sw.benchmark_run}，厂商自报、第三方转引 ×${sw.lab_reported}（开放提交榜上的定制多智能体竞赛系统如 QUVI、AntQL、Tianqiong 等单独归为 Agent 产品剔除，只收基座模型与标准通用脚手架）。新鲜度：${rules.fresh_days} 天内有新评测或新模型上榜记 ×1.0，之后线性降到第 ${rules.stale_days} 天的 ×${rules.stale_factor}；官方已归档的直接 ×${rules.stale_factor}。附带抽样标准误的小样本基准按方差比例自动衰减权重，同题集子榜拆分权重；同一维度有 3 个及以上来源时，单一来源占比封顶 40%–45%。`,
+              `Tier reflects the benchmark itself: S ×${tw.S} / A ×${tw.A} / B ×${tw.B}. Provenance: maintainer or independent runs ×${sw.benchmark_run}, lab-reported or third-party ×${sw.lab_reported} (bespoke multi-agent SQL competition systems like QUVI, AntQL, or Tianqiong are filtered as agent products so only base models and standard CLI harnesses are scored). Freshness: ×1.0 within ${rules.fresh_days} days, decaying linearly to ×${rules.stale_factor} at ${rules.stale_days} days; archived boards ×${rules.stale_factor}. Small-sample runs with large sampling stderr are precision-attenuated, shared-question subsets split weight, and with 3+ source families any single source is capped at 40–45%.`
             )}
           </p>
         </div>
 
         <div className="blk p-5">
           <div className="font-mono text-xs font-medium text-[var(--color-warning)]">
-            03 · {tx("数据不全标记与不确定度", "Incomplete Flag & Uncertainty")}
+            03 · {tx("信度连续融合与数据不全标记", "Reliability Fusion & Incomplete Flag")}
           </div>
           <h3 className="mt-2 text-sm font-semibold text-[var(--color-foreground)]">
-            {tx("缺测按实测规律修正，数据不全照排但明确标出", "Data-Driven Missing Adjustment; Incomplete Data Flagged")}
+            {tx("实测越准话语权越大，缺测与高噪声平滑对齐", "Higher Precision Speaks Louder; No Missing-Data Cliff")}
           </h3>
           <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
             {tx(
-              `六维都测过的模型，综合分就是加权平均。缺维度的模型，综合分 = 已测维度加权平均 + 缺测修正：在六维都测过的模型上拟合“只用这几维算的分 → 六维分”的直线来估；缺的维度本身不编分数。不直接用已测平均，是因为同一模型的 SQL、安全普遍比其它维低，直接平均会让缺这两维的模型系统性偏高（还原实验里最多偏约 2.4 分），直线修正在高分、低分两头偏差都接近 0。所有模型同榜排名；已测维度不到当前权重 ${pct(rules.min_coverage)} 的标为“数据不全”，名次前加 ≈，并写明缺哪几维、按区间可能落在第几名。区间按模型假设约为 90%，由各基准成绩的实际波动和缺测修正的预测误差算出，不包含脚手架、推理档位的差异。同一模型同一基准有多次成绩时，取实测来源里的最高分，即各基准的最佳配置成绩。`,
-              `For models scored on all six dimensions, the overall is the weighted mean. Otherwise overall = weighted mean of measured dimensions + a missing adjustment, read off a line fitted on fully measured models (“score from these dimensions only → six-dimension score”); missing dimensions themselves never get a made-up score. A plain measured mean is biased because a model's SQL and security usually trail its other dimensions — it would systematically flatter models missing them (by up to ~2.4 points in recovery tests), while the fitted line stays unbiased for both strong and weak models. Every model is ranked on one board; those measured on less than ${pct(rules.min_coverage)} of the active weights are flagged “incomplete” with an ≈ rank, the missing dimensions, and the rank range implied by their uncertainty. Ranges are ~90% under the model's assumptions, built from observed benchmark-to-benchmark noise plus the adjustment's prediction error; harness and effort differences are not included. When a model has several runs on one benchmark, the best measured run is used (best-configuration score).`
+              `各单维榜单严格保留该维度自己的分数，缺的维度绝不编分。汇总综合总榜时，每个维度的实测话语权按统计信度 r = τ₀² / (τ₀² + SE²)（τ₀ = ${rules.reliability_tau ?? 6.5}）连续折算，剩余 (1 − r) 权重按完整模型拟合的跨维度基线直线估算：测了多项大榜（SE ≈ 2）时 r > 90% 几乎全听实测；仅测 1 项低区分度微基准（如单测 Tinybird SQL，SE ≈ 17）时自动降权，与完全缺测（r = 0%）平滑衔接，消除“多测反而比不测倒扣分”的断崖（前 25 名同场胜负一致率达 90.9%）。已测维度不到权重 ${pct(rules.min_coverage)} 的标为“数据不全”，名次前加 ≈ 并给出区间名次范围。`,
+              `Single-dimension boards keep raw dimension scores untouched and missing dimensions never get a made-up score. When combining into Overall, each dimension's direct measurement is weighted by its statistical reliability r = τ₀² / (τ₀² + SE²) (τ₀ = ${rules.reliability_tau ?? 6.5}), blending smoothly with a cross-dimension baseline line fitted on complete models for the remaining (1 − r) share: well-measured dimensions (SE ≈ 2) carry >90% direct weight, while noisy 1-benchmark dimensions (e.g. Tinybird-only SQL, SE ≈ 17) smoothly fall back toward the same baseline used for untested dimensions (r = 0%), reaching 90.9% head-to-head concordance across Top 25 pairs. Models covering < ${pct(rules.min_coverage)} of active weights are flagged “incomplete” with ≈ ranks.`
             )}
           </p>
         </div>

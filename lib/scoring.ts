@@ -9,6 +9,15 @@ export const DEFAULT_WEIGHTS: Record<CategoryId, number> = {
   security: 10,
 };
 
+/** 跨维度固有标准差尺度 τ₀（与管线 RELIABILITY_TAU = 6.5 一致） */
+export const RELIABILITY_TAU = 6.5;
+
+export function dimReliability(se: number | null | undefined, tau = RELIABILITY_TAU): number {
+  if (se === null || se === undefined) return 0;
+  const tau2 = tau * tau;
+  return tau2 / (tau2 + se * se);
+}
+
 const INDEPENDENT_TYPES = new Set(["benchmark_run", "independent_run"]);
 
 export interface WeightedModelRow extends ModelEntry {
@@ -19,6 +28,9 @@ export interface WeightedModelRow extends ModelEntry {
   dynamicCoverage: number;
   /** false = 已测维度不到门槛（数据不全）：照常排名，但名次仅供参考 */
   dynamicComplete: boolean;
+  /** true = 因单一来源或单基准 2 分保护规则被排在 2 分以内的更充分实测模型之后 */
+  dynamicGuarded: boolean;
+  dynamicGuardReason?: "single_source" | "single_benchmark" | null;
   /** 只给数据不全的模型：按它的区间，在当前榜单里可能落在的名次范围 [最好, 最差] */
   dynamicRankRange: [number, number] | null;
 }
@@ -43,16 +55,21 @@ function attachRankRanges(rows: WeightedModelRow[]): void {
   }
 }
 
-/** 单一来源的 Estimated 模型，不允许排在 2 分以内的多方实测模型前面（和管线同一规则） */
-function applyCloseCallGuard(rows: WorkRow[]): void {
-  const single = (r: WorkRow) => r.evidence_status === "Estimated" && r.independent_family_count < 2;
+/** 证据偏薄的模型（综合榜单一来源 Estimated / 单维榜仅 1 项基准），不允许排在 2 分以内的多源或多基准实测模型前面 */
+function applyTwoPointGuard(
+  rows: WorkRow[],
+  isThin: (r: WorkRow) => boolean,
+  reason: "single_source" | "single_benchmark"
+): void {
   let changed = true;
   while (changed) {
     changed = false;
     for (let i = 0; i < rows.length - 1; i++) {
       const curr = rows[i];
       const next = rows[i + 1];
-      if (single(curr) && !single(next) && curr.dynamicScore - next.dynamicScore <= 2.0) {
+      if (isThin(curr) && !isThin(next) && curr.dynamicScore - next.dynamicScore <= 2.0) {
+        curr.dynamicGuarded = true;
+        curr.dynamicGuardReason = reason;
         rows[i] = next;
         rows[i + 1] = curr;
         changed = true;
@@ -61,94 +78,185 @@ function applyCloseCallGuard(rows: WorkRow[]): void {
   }
 }
 
-/** 缺测修正用的直线：全维度分 ≈ intercept + slope × 只用已测这几维算的加权平均（在各维都有分的模型上拟合） */
-export interface MissingLine {
+/** 单维度跨维度基线回归线：E[S_c | X_rel] ≈ intercept + slope × X_rel */
+export interface CategoryBaselineLine {
   intercept: number;
   slope: number;
-  residSd: number;
-  /** 参照模型数：当前权重下各维都有分的模型 */
+  structSd: number;
   n: number;
   meanX: number;
   sxx: number;
 }
 
+export interface CategoryContribution {
+  cat: CategoryId;
+  weight: number;
+  measured: number | null;
+  se: number | null;
+  reliability: number;
+  baseline: number;
+  effective: number;
+  contrib: number;
+}
+
 export interface OverallEstimate {
-  /** 已测维度的加权平均 */
+  /** 已测维度的直接加权平均 */
   measured: number;
-  /** 综合分：维度齐全时 = 已测平均，缺测时 = 直线估计值 */
+  /** 按测量信度 r = τ₀²/(τ₀²+SE²) 加权的可靠已测均值 X_rel */
+  reliableMean: number;
+  /** 综合分：各维度按信度融合实测与跨维度基线后的加权和 */
   score: number;
   se: number;
-  /** 已测部分的测量误差（缺测时已按直线斜率折算） */
   measuredSe: number;
-  /** 缺测部分的估计误差：直线在参照模型上的预测误差，维度齐全时为 0 */
   predSd: number;
   coverage: number;
-  /** 维度齐全时为 null */
-  line: MissingLine | null;
+  parts: CategoryContribution[];
+  lines: Record<CategoryId, CategoryBaselineLine>;
 }
 
 /**
- * 和管线同一算法：维度齐全时综合分就是加权平均；缺测时，在各维都有分的模型上拟合
- * "只用已测这几维算的分 → 全维度分"的直线，按它估综合分，这条线的预测误差计入区间。
+ * 和管线同一算法：每个维度的实测话语权按信度 r = τ₀² / (τ₀² + SE²) 连续折算；
+ * 测得多且准的维度接近 100% 实测，极高噪声单基准（如单测 Tinybird）与缺测维度（r = 0）平滑向跨维度基线靠拢。
  */
 export function estimateOverall(
   models: ModelEntry[],
-  weights: Record<CategoryId, number>
+  weights: Record<CategoryId, number>,
+  minCoverage = 0.7,
+  reliabilityTau = RELIABILITY_TAU
 ): Map<string, OverallEstimate> {
-  const cats = (Object.keys(weights) as CategoryId[]).filter((c) => weights[c] > 0);
+  const allCats: CategoryId[] = ["repo", "architecture", "systems", "sql", "performance", "security"];
+  const cats = allCats.filter((c) => (weights[c] ?? 0) > 0);
+  const out = new Map<string, OverallEstimate>();
+  if (!cats.length) return out;
+
   const total = cats.reduce((acc, c) => acc + weights[c], 0);
   const w = (c: CategoryId) => weights[c] / total;
-  const scoredCats = (m: ModelEntry) => cats.filter((c) => m.category_scores[c] !== null && m.category_scores[c] !== undefined);
-  const avgOver = (m: ModelEntry, S: CategoryId[]) =>
-    S.reduce((acc, c) => acc + w(c) * (m.category_scores[c] as number), 0) / S.reduce((acc, c) => acc + w(c), 0);
+  const rel = (m: ModelEntry, c: CategoryId) =>
+    m.category_scores[c] !== null && m.category_scores[c] !== undefined
+      ? dimReliability(m.category_se[c], reliabilityTau)
+      : 0;
 
-  const reference = models.filter((m) => scoredCats(m).length === cats.length);
-  const lines = new Map<string, MissingLine>();
-  const lineFor = (S: CategoryId[]): MissingLine => {
-    const key = S.join("+");
-    const cached = lines.get(key);
-    if (cached) return cached;
-    const xs = reference.map((m) => avgOver(m, S));
-    const ys = reference.map((m) => avgOver(m, cats));
-    const meanX = xs.reduce((a, b) => a + b, 0) / xs.length;
-    const meanY = ys.reduce((a, b) => a + b, 0) / ys.length;
-    let sxy = 0;
-    let sxx = 0;
-    xs.forEach((x, i) => {
-      sxy += (x - meanX) * (ys[i] - meanY);
-      sxx += (x - meanX) ** 2;
-    });
-    const slope = sxy / sxx;
-    const intercept = meanY - slope * meanX;
-    const rss = xs.reduce((acc, x, i) => acc + (ys[i] - intercept - slope * x) ** 2, 0);
-    const line = { intercept, slope, residSd: Math.sqrt(rss / (xs.length - 2)), n: xs.length, meanX, sxx };
-    lines.set(key, line);
-    return line;
-  };
-
-  const out = new Map<string, OverallEstimate>();
+  const xRel = new Map<string, number>();
+  const wRel = new Map<string, number>();
+  const covMap = new Map<string, number>();
   for (const m of models) {
-    const S = scoredCats(m);
-    if (!S.length) continue;
-    const coverage = S.reduce((acc, c) => acc + w(c), 0);
-    const measured = avgOver(m, S);
-    const rawSe = Math.sqrt(S.reduce((acc, c) => acc + (w(c) * (m.category_se[c] ?? 0)) ** 2, 0)) / coverage;
-    if (S.length === cats.length) {
-      out.set(m.canonical_id, { measured, score: measured, se: rawSe, measuredSe: rawSe, predSd: 0, coverage, line: null });
-      continue;
+    let num = 0;
+    let den = 0;
+    let cov = 0;
+    for (const c of cats) {
+      const sc = m.category_scores[c];
+      if (sc !== null && sc !== undefined) {
+        cov += w(c);
+        const r = rel(m, c);
+        const wr = w(c) * r;
+        num += wr * sc;
+        den += wr;
+      }
     }
-    const line = lineFor(S);
-    // 离参照模型的平均水平越远，这条线估得越不准
-    const predSd = line.residSd * Math.sqrt(1 + 1 / line.n + (measured - line.meanX) ** 2 / line.sxx);
-    const measuredSe = line.slope * rawSe;
+    covMap.set(m.canonical_id, cov);
+    wRel.set(m.canonical_id, den);
+    xRel.set(m.canonical_id, den > 0 ? num / den : 0);
+  }
+
+  const completeModels = models.filter((m) => (covMap.get(m.canonical_id) ?? 0) >= minCoverage - 1e-9);
+  const lines = {} as Record<CategoryId, CategoryBaselineLine>;
+  for (const c of allCats) {
+    lines[c] = { intercept: 0, slope: 1, structSd: 0, n: 0, meanX: 0, sxx: 1 };
+  }
+
+  for (const c of cats) {
+    let pool = completeModels.filter((m) => m.category_scores[c] !== null && m.category_scores[c] !== undefined);
+    if (pool.length < 3) {
+      pool = models.filter((m) => m.category_scores[c] !== null && m.category_scores[c] !== undefined);
+    }
+    if (!pool.length) continue;
+
+    const xs = pool.map((m) => xRel.get(m.canonical_id) ?? 0);
+    const ys = pool.map((m) => m.category_scores[c] as number);
+    const ses = pool.map((m) => m.category_se[c] ?? 0);
+    const rawWs = ses.map((se) => dimReliability(se, reliabilityTau));
+    const wSum = rawWs.reduce((a, b) => a + b, 0) || 1;
+    const ws = rawWs.map((v) => v / wSum);
+
+    const mx = xs.reduce((acc, x, i) => acc + ws[i] * x, 0);
+    const my = ys.reduce((acc, y, i) => acc + ws[i] * y, 0);
+    const sxxW = xs.reduce((acc, x, i) => acc + ws[i] * (x - mx) ** 2, 0);
+
+    let slope = 1;
+    let intercept = 0;
+    let structSd = 0;
+    if (cats.length > 1 && sxxW > 1e-6) {
+      const sxyW = xs.reduce((acc, x, i) => acc + ws[i] * (x - mx) * (ys[i] - my), 0);
+      slope = sxyW / sxxW;
+      intercept = my - slope * mx;
+      const rawRv =
+        xs.reduce((acc, x, i) => acc + ws[i] * (ys[i] - (intercept + slope * x)) ** 2, 0) *
+        (pool.length / Math.max(pool.length - 2, 1));
+      const measV = ses.reduce((acc, se, i) => acc + ws[i] * se ** 2, 0);
+      structSd = Math.sqrt(Math.max(rawRv - 0.5 * measV, 9.0));
+    }
+    const sxxUnw = Math.max(
+      xs.reduce((acc, x) => acc + (x - mx) ** 2, 0),
+      1.0
+    );
+    lines[c] = { intercept, slope, structSd, n: pool.length, meanX: mx, sxx: sxxUnw };
+  }
+
+  for (const m of models) {
+    const S = cats.filter((c) => m.category_scores[c] !== null && m.category_scores[c] !== undefined);
+    if (!S.length) continue;
+    const coverage = covMap.get(m.canonical_id) ?? 0;
+    const measured = S.reduce((acc, c) => acc + w(c) * (m.category_scores[c] as number), 0) / coverage;
+    const xm = xRel.get(m.canonical_id) ?? 0;
+    const wrel = wRel.get(m.canonical_id) ?? 0;
+    const bRem = cats.reduce((acc, c) => acc + w(c) * (1 - rel(m, c)) * lines[c].slope, 0);
+
+    let score = 0;
+    let measVar = 0;
+    let predVar = 0;
+    const parts: CategoryContribution[] = [];
+
+    for (const c of cats) {
+      const sc = m.category_scores[c];
+      const se = m.category_se[c];
+      const r = rel(m, c);
+      const ln = lines[c];
+      const baseline = ln.intercept + ln.slope * xm;
+      const effective = r * (sc ?? 0) + (1 - r) * baseline;
+      const contrib = w(c) * effective;
+      score += contrib;
+
+      if (sc !== null && sc !== undefined && se !== null && se !== undefined) {
+        const coef = w(c) * r * (1 + (wrel > 0 ? bRem / wrel : 0));
+        measVar += (coef * se) ** 2;
+      }
+      const predSdC = ln.n > 0 ? ln.structSd * Math.sqrt(1 + 1 / ln.n + (xm - ln.meanX) ** 2 / ln.sxx) : 0;
+      predVar += (w(c) * (1 - r) * predSdC) ** 2;
+
+      parts.push({
+        cat: c,
+        weight: w(c),
+        measured: sc ?? null,
+        se: se ?? null,
+        reliability: r,
+        baseline,
+        effective,
+        contrib,
+      });
+    }
+
+    const measuredSe = Math.sqrt(measVar);
+    const predSd = Math.sqrt(predVar);
     out.set(m.canonical_id, {
       measured,
-      score: line.intercept + line.slope * measured,
-      se: Math.sqrt(measuredSe ** 2 + predSd ** 2),
+      reliableMean: xm,
+      score,
+      se: Math.sqrt(measVar + predVar),
       measuredSe,
       predSd,
       coverage,
-      line,
+      parts,
+      lines,
     });
   }
   return out;
@@ -165,7 +273,7 @@ export function recomputeRankings(
   activeCategory: CategoryId | "overall",
   minCoverage: number
 ): WeightedModelRow[] {
-  // 单维度视图：有这个维度分数的模型都按维度分排名
+  // 单维度视图：有这个维度分数的模型都按维度分排名，并对仅测 1 项基准的模型施加 2 分邻近保护
   if (activeCategory !== "overall") {
     const rows: WorkRow[] = [];
     for (const m of models) {
@@ -180,11 +288,18 @@ export function recomputeRankings(
         dynamicCoverage: m.coverage,
         // 单维度榜只看这一维，不存在"数据不全"
         dynamicComplete: true,
+        dynamicGuarded: false,
+        dynamicGuardReason: null,
         dynamicRankRange: null,
         se,
       });
     }
     rows.sort((a, b) => b.dynamicScore - a.dynamicScore || a.se - b.se);
+    applyTwoPointGuard(
+      rows,
+      (r) => Boolean(r.single_benchmark_categories?.includes(activeCategory)),
+      "single_benchmark"
+    );
     return rows.map(({ se: _se, ...r }, idx) => ({ ...r, dynamicRank: idx + 1 }));
   }
 
@@ -201,6 +316,8 @@ export function recomputeRankings(
       dynamicRank: m.rank,
       dynamicCoverage: m.coverage,
       dynamicComplete: m.complete,
+      dynamicGuarded: Boolean(m.rank_guarded),
+      dynamicGuardReason: m.rank_guarded ? "single_source" : null,
       dynamicRankRange: null,
     }));
     rows.sort((a, b) => a.dynamicRank - b.dynamicRank);
@@ -208,7 +325,7 @@ export function recomputeRankings(
     return rows;
   }
 
-  const estimates = estimateOverall(models, weights);
+  const estimates = estimateOverall(models, weights, minCoverage);
   const work: WorkRow[] = [];
   for (const m of models) {
     const e = estimates.get(m.canonical_id);
@@ -220,13 +337,19 @@ export function recomputeRankings(
       dynamicRank: 0,
       dynamicCoverage: e.coverage,
       dynamicComplete: e.coverage >= minCoverage - 1e-9,
+      dynamicGuarded: false,
+      dynamicGuardReason: null,
       dynamicRankRange: null,
       se: e.se,
     });
   }
 
   work.sort((a, b) => b.dynamicScore - a.dynamicScore || a.se - b.se);
-  applyCloseCallGuard(work);
+  applyTwoPointGuard(
+    work,
+    (r) => r.evidence_status === "Estimated" && r.independent_family_count < 2,
+    "single_source"
+  );
   const rows: WeightedModelRow[] = work.map(({ se: _se, ...r }, idx) => ({ ...r, dynamicRank: idx + 1 }));
   attachRankRanges(rows);
   return rows;
@@ -372,12 +495,14 @@ export function getCategoryEvidenceDepth(
     security: new Set(),
   };
 
-  for (const item of model.ledger) {
-    if (benchmarks[item.benchmark_id]?.scored === false) continue;
-    bms[item.category].add(item.benchmark_id);
-    // 只数维护方实测 / 独立复测的来源，自报和转引不算"独立来源"
-    if (item.source_family && INDEPENDENT_TYPES.has(item.source_type)) {
-      fams[item.category].add(item.source_family);
+  // 直接按实际入模计分的 representative_benchmarks 统计，排除不连通旧榜与同基准多源重复计数
+  for (const [bid, rep] of Object.entries(model.representative_benchmarks)) {
+    const meta = benchmarks[bid];
+    if (!meta || meta.scored === false || meta.comparable === false) continue;
+    bms[meta.category].add(bid);
+    const fam = rep.source_family ?? meta.source_family;
+    if (fam && INDEPENDENT_TYPES.has(rep.source_type)) {
+      fams[meta.category].add(fam);
     }
   }
 

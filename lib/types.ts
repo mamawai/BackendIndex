@@ -77,6 +77,7 @@ export interface RepBenchmark {
   display: string;
   harness: string | null;
   effort: string | null;
+  source_family?: string;
   source_type: SourceType;
   date: string | null;
   /** 这条成绩在拟合里实际用的权重（档位×来源×新鲜度，再经同题拆分、单一来源封顶） */
@@ -90,6 +91,8 @@ export interface ModelEntry {
   rank: number;
   /** false = 已测维度不到权重门槛（数据不全）：照常排名，但名次仅供参考 */
   complete: boolean;
+  /** true = 因单一来源 2 分保护规则被后置在多方实测模型之后 */
+  rank_guarded?: boolean;
   overall_score: number;
   /** 已测维度的加权平均 */
   measured_score: number;
@@ -129,6 +132,7 @@ export interface ModelEntry {
 
 export interface SnapshotRules {
   min_coverage: number;
+  reliability_tau?: number;
   fresh_days: number;
   stale_days: number;
   stale_factor: number;

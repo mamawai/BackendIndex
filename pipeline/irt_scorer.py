@@ -16,6 +16,8 @@ ALPHA = 0.88
 BETA = 0.35
 # 数据完整的门槛：已测维度至少占当前维度权重的 70%；不到的照常排名，但标"数据不全"、名次仅供参考
 MIN_COVERAGE = 0.70
+# 跨维度固有标准差尺度 τ₀（0-100 分制）：综合分汇总时各维实测话语权按信度 τ₀²/(τ₀² + SE²) 连续折算，缺测自然退化为 0
+RELIABILITY_TAU = 6.5
 # θ 积分网格：每个维度的模型总体按 N(0,1) 定刻度
 GRID = np.linspace(-6.0, 6.0, 481)
 LOG_PRIOR = -0.5 * GRID**2
@@ -174,10 +176,17 @@ def _prepare_category(
     b_idx = {bid: j for j, bid in enumerate(benchmarks)}
     Y = np.zeros((len(models), len(benchmarks)), dtype=np.float64)
     W = np.zeros_like(Y)
+    # 典型跨基准离散度基准值，用于把观测自身的抽样标准误 stderr（如仅 9 题的 MirrorCode ±11%）折算进有效精度权重
+    phi_ref = 0.025
     for (mid, bid), obs in fitted_pairs.items():
         i, j = m_idx[mid], b_idx[bid]
-        Y[i, j] = np.clip(obs.raw_score, 0.01, 0.99)
-        W[i, j] = eff[(mid, bid)]
+        y = float(np.clip(obs.raw_score, 0.01, 0.99))
+        w0 = eff[(mid, bid)]
+        se = obs.extra.get("stderr")
+        if isinstance(se, (int, float)) and se > 0:
+            w0 = w0 / (1.0 + (w0 * (float(se) ** 2)) / (phi_ref * y * (1.0 - y)))
+        Y[i, j] = y
+        W[i, j] = w0
     return _CategoryData(models, benchmarks, Y, W, fitted_pairs)
 
 
@@ -200,9 +209,10 @@ def _fit_mml(
     else:
         a, d = start[0].copy(), start[1].copy()
 
-    lam_log_a, lam_d = 1.2, 0.08
-    # 少于 4 个模型的基准不估区分度，固定为 1
-    can_a = M.sum(0) >= 4
+    # 加强区分度先验正则并限制上界至 1.45（a² ≤ 2.1×），防止稀疏维度里单个小基准通过 a² 垄断定价权；保留 0.25 下界避免平坦项推高 φ
+    lam_log_a, lam_d = 2.5, 0.08
+    # 少于 5 个模型的基准不估区分度，固定为 1
+    can_a = M.sum(0) >= 5
     WY = W * Y / phi
     WN = W * (1.0 - Y) / phi
     post = np.zeros((Y.shape[0], GRID.size))
@@ -233,7 +243,7 @@ def _fit_mml(
             det = np.maximum(h11 * h22 - h12**2, 1e-12)
             step_log_a = np.where(can_a, np.clip((h22 * g1 - h12 * g2) / det, -0.25, 0.25), 0.0)
             step_d = np.where(can_a, (h11 * g2 - h12 * g1) / det, g2 / h22)
-            a = np.exp(np.clip(log_a + step_log_a, math.log(0.25), math.log(4.0)))
+            a = np.exp(np.clip(log_a + step_log_a, math.log(0.25), math.log(1.45)))
             d = np.clip(d + np.clip(step_d, -0.5, 0.5), -6.0, 6.0)
 
     eap = post @ GRID
@@ -448,37 +458,61 @@ def _attach_scores(calibrations: dict[CategoryId, CategoryCalibration]) -> None:
             bp["discrimination"] = round(bp["discrimination"], 3)
 
 
-class MissingLine(NamedTuple):
-    """缺测修正用的直线：六维分 ≈ intercept + slope × 只用已测这几维算的加权平均（在六维都有分的模型上拟合）。"""
+class CategoryBaselineLine(NamedTuple):
+    """跨维度基线回归线：E[S_c | X_rel] ≈ intercept + slope × X_rel（按实测信度加权拟合）。"""
 
     intercept: float
     slope: float
-    resid_sd: float
+    struct_sd: float
     n: int
     mean_x: float
     sxx: float
 
-    def predict(self, x: float, x_se: float) -> tuple[float, float]:
-        """估计的综合分和标准误：已测部分的测量误差按斜率折算，再加上这条线本身的预测误差。"""
-        pred_sd = self.resid_sd * math.sqrt(1.0 + 1.0 / self.n + (x - self.mean_x) ** 2 / self.sxx)
-        return self.intercept + self.slope * x, math.sqrt((self.slope * x_se) ** 2 + pred_sd**2)
+
+def _dim_reliability(se: float | None) -> float:
+    if se is None:
+        return 0.0
+    tau2 = RELIABILITY_TAU * RELIABILITY_TAU
+    return tau2 / (tau2 + se * se)
 
 
-def _fit_missing_line(
-    reference: list[dict[CategoryId, float]],
-    covered: tuple[CategoryId, ...],
+def _fit_category_baselines(
+    listed_mids: list[str],
+    calibrations: dict[CategoryId, CategoryCalibration],
+    categories: list[CategoryId],
     norm_w: dict[CategoryId, float],
-) -> MissingLine:
-    """Regress the full weighted score on the covered-only weighted mean across fully measured models."""
-    cov = sum(norm_w[c] for c in covered)
-    xs = np.array([sum(norm_w[c] * s[c] for c in covered) / cov for s in reference])
-    ys = np.array([sum(w * s[c] for c, w in norm_w.items()) for s in reference])
-    mean_x = float(xs.mean())
-    sxx = float(((xs - mean_x) ** 2).sum())
-    slope = float(((xs - mean_x) * (ys - ys.mean())).sum() / sxx)
-    intercept = float(ys.mean()) - slope * mean_x
-    resid_sd = float(np.sqrt(((ys - intercept - slope * xs) ** 2).sum() / (len(xs) - 2)))
-    return MissingLine(intercept, slope, resid_sd, len(xs), mean_x, sxx)
+    x_rel: dict[str, float],
+) -> dict[CategoryId, CategoryBaselineLine]:
+    """Fit E[S_c | X_rel] = a_c + b_c * X_rel per category on complete listed models weighted by measurement reliability."""
+    complete_mids = [
+        mid
+        for mid in listed_mids
+        if sum(norm_w[c] for c in categories if mid in calibrations[c].model_scores) >= MIN_COVERAGE - 1e-9
+    ]
+    lines: dict[CategoryId, CategoryBaselineLine] = {}
+    for c in categories:
+        pool = [mid for mid in complete_mids if mid in calibrations[c].model_scores]
+        if len(pool) < 3:
+            pool = [mid for mid in listed_mids if mid in calibrations[c].model_scores]
+        xs = np.array([x_rel[mid] for mid in pool], dtype=np.float64)
+        ys = np.array([calibrations[c].model_scores[mid] for mid in pool], dtype=np.float64)
+        ses = np.array([calibrations[c].model_se[mid] for mid in pool], dtype=np.float64)
+        ws = np.array([_dim_reliability(float(se)) for se in ses], dtype=np.float64)
+        ws /= ws.sum()
+        mx = float(np.sum(ws * xs))
+        my = float(np.sum(ws * ys))
+        sxx_w = float(np.sum(ws * (xs - mx) ** 2))
+        if len(categories) > 1 and sxx_w > 1e-6:
+            slope = float(np.sum(ws * (xs - mx) * (ys - my)) / sxx_w)
+            intercept = my - slope * mx
+            raw_rv = float(np.sum(ws * (ys - (intercept + slope * xs)) ** 2)) * (len(pool) / max(len(pool) - 2, 1))
+            meas_v = float(np.sum(ws * (ses**2)))
+            struct_sd = math.sqrt(max(raw_rv - 0.5 * meas_v, 9.0))
+        else:
+            slope, intercept, struct_sd = 1.0, 0.0, 0.0
+        sxx_unw = max(float(np.sum((xs - mx) ** 2)), 1.0)
+        lines[c] = CategoryBaselineLine(intercept, slope, struct_sd, len(pool), mx, sxx_unw)
+    return lines
 
 
 def score_all_models(
@@ -545,13 +579,24 @@ def score_all_models(
             "is_listed": len(distinct_benchmarks) >= 3 and len(covered_cats) >= 2 and "repo" in core_cats,
         }
 
-    # 缺测修正的参照：六个维度都有分的收录模型
-    reference = [
-        {c: calibrations[c].model_scores[mid] for c in categories}
-        for mid, ev in evidence.items()
-        if ev["is_listed"] and len(ev["covered"]) == len(categories)
-    ]
-    missing_lines: dict[tuple[CategoryId, ...], MissingLine] = {}
+    # 按维度实测信度 r = τ₀² / (τ₀² + SE²) 汇总各模型的可靠已测均值 X_rel，并在完整收录模型上拟合各维基线
+    x_rel: dict[str, float] = {}
+    w_rel: dict[str, float] = {}
+    for mid, ev in evidence.items():
+        num = 0.0
+        den = 0.0
+        for c in ev["covered"]:
+            sc = calibrations[c].model_scores[mid]
+            se = calibrations[c].model_se[mid]
+            r = _dim_reliability(se)
+            wr = norm_w[c] * r
+            num += wr * sc
+            den += wr
+        w_rel[mid] = den
+        x_rel[mid] = num / den if den > 0 else 0.0
+
+    listed_mids = [mid for mid, ev in evidence.items() if ev["is_listed"]]
+    baseline_lines = _fit_category_baselines(listed_mids, calibrations, categories, norm_w, x_rel)
 
     results: dict[str, dict[str, Any]] = {}
     sort_key: dict[str, tuple[float, float]] = {}
@@ -561,17 +606,27 @@ def score_all_models(
         cat_se: dict[str, float | None] = {c: calibrations[c].model_se.get(mid) for c in categories}
         coverage = sum(norm_w[c] for c in covered)
         measured = sum(norm_w[c] * cat_scores[c] for c in covered) / coverage
-        measured_se = math.sqrt(sum((norm_w[c] * cat_se[c]) ** 2 for c in covered)) / coverage
 
-        if len(covered) == len(categories):
-            overall, overall_se = measured, measured_se
-        else:
-            # 缺的维度不能默认"和已测的一样好"：同一模型的 SQL、安全普遍比其它维低，高分模型尤甚。
-            # 用六维齐全的模型拟合"只用这几维算的分 → 六维分"的直线来估，还原实验里高分、低分两头都不偏
-            key = tuple(covered)
-            if key not in missing_lines:
-                missing_lines[key] = _fit_missing_line(reference, key, norm_w)
-            overall, overall_se = missing_lines[key].predict(measured, measured_se)
+        # 综合分按各维测量信度连续融合：高精度维度接近 100% 实测，极高噪声单基准与缺测维度平滑向跨维度基线靠拢，消除缺测断崖
+        xm = x_rel[mid]
+        wrel = w_rel[mid]
+        b_rem = sum(norm_w[c] * (1.0 - _dim_reliability(cat_se[c])) * baseline_lines[c].slope for c in categories)
+        overall = 0.0
+        meas_var = 0.0
+        pred_var = 0.0
+        for c in categories:
+            sc = cat_scores[c]
+            se = cat_se[c]
+            r = _dim_reliability(se)
+            ln = baseline_lines[c]
+            pred_c = ln.intercept + ln.slope * xm
+            overall += norm_w[c] * (r * (sc if sc is not None else 0.0) + (1.0 - r) * pred_c)
+            if sc is not None and se is not None:
+                coef = norm_w[c] * r * (1.0 + (b_rem / wrel if wrel > 0 else 0.0))
+                meas_var += (coef * se) ** 2
+            pred_sd_c = ln.struct_sd * math.sqrt(1.0 + 1.0 / ln.n + ((xm - ln.mean_x) ** 2) / ln.sxx)
+            pred_var += (norm_w[c] * (1.0 - r) * pred_sd_c) ** 2
+        overall_se = math.sqrt(meas_var + pred_var)
         # 排名用未取整的分数；完全同分时区间窄（证据更确定）的在前
         sort_key[mid] = (-overall, overall_se)
 
@@ -606,6 +661,7 @@ def score_all_models(
     # 收录的模型都在同一张榜上排名；已测维度不到门槛的标为"数据不全"
     for r in results.values():
         r["complete"] = r["coverage"] >= MIN_COVERAGE - 1e-9
+        r["rank_guarded"] = False
     ranked_pool = [r for r in results.values() if r["eligible_overall"]]
     ranked_pool.sort(key=lambda r: sort_key[r["canonical_id"]])
 
@@ -622,6 +678,7 @@ def score_all_models(
                 and (curr["overall_score"] - nxt["overall_score"]) <= 2.0
                 and not (nxt["evidence_status"] == "Estimated" and nxt["independent_family_count"] < 2)
             ):
+                curr["rank_guarded"] = True
                 ranked_pool[idx], ranked_pool[idx + 1] = nxt, curr
                 changed = True
 

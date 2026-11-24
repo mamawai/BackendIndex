@@ -29,8 +29,6 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
   const model = snapshot.models.find((m) => m.canonical_id === modelId) ?? snapshot.models[0];
 
   const excludedCount = CATS.reduce((acc, c) => acc + (categories[c]?.excluded_benchmarks?.length ?? 0), 0);
-  // 缺测修正的参照：六个维度都有分的模型
-  const refCount = snapshot.models.filter((m) => CATS.every((c) => m.category_scores[c] !== null)).length;
   const steps = [
     {
       title: tx("抓取", "Collect"),
@@ -66,15 +64,15 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
     },
     {
       title: tx("加权合成", "Combine"),
-      value: tx("已测加权平均 + 缺测修正", "Measured mean + missing adj."),
+      value: tx("按维度信度连续融合", "Reliability-weighted fusion"),
       note: CATS.map((c) => `${catLabel(c)} ${pct(categories[c].weight)}`).join(" · "),
     },
     {
       title: tx("排名", "Rank"),
       value: tx(`${summary.ranked_models} 个模型同榜排名`, `${summary.ranked_models} models on one board`),
       note: tx(
-        `已测维度不到权重 ${pct(rules.min_coverage)} 的 ${summary.ranked_models - summary.complete_models} 个标为"数据不全"，名次仅供参考并给出可能范围；缺的维度不编分，综合分按 ${refCount} 个六维都测过的模型的实际关系修正，估计误差计入区间`,
-        `${summary.ranked_models - summary.complete_models} models measured on < ${pct(rules.min_coverage)} of the weights are flagged incomplete, with an indicative rank range; missing dimensions get no made-up score — the overall is adjusted using ${refCount} fully measured models, and the estimate error widens the range`
+        `已测维度不到权重 ${pct(rules.min_coverage)} 的 ${summary.ranked_models - summary.complete_models} 个标为"数据不全"；各维按统计信度 τ₀²/(τ₀²+SE²) 连续融合实测与 ${summary.complete_models} 个完整模型的跨维度基线（缺测自然退化为 0 信度）`,
+        `${summary.ranked_models - summary.complete_models} models measured on < ${pct(rules.min_coverage)} of the weights are flagged incomplete; each dimension blends its measurement with a baseline fitted on ${summary.complete_models} complete models via reliability τ₀²/(τ₀²+SE²)`
       ),
     },
   ];
@@ -84,15 +82,14 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
     () => Object.fromEntries(CATS.map((c) => [c, categories[c].weight])) as Record<CategoryId, number>,
     [categories]
   );
-  const estimates = useMemo(() => estimateOverall(snapshot.models, weights), [snapshot.models, weights]);
+  const tau0 = rules.reliability_tau ?? 6.5;
+  const estimates = useMemo(
+    () => estimateOverall(snapshot.models, weights, rules.min_coverage, tau0),
+    [snapshot.models, weights, rules.min_coverage, tau0]
+  );
   const est = estimates.get(model.canonical_id)!;
-  const covered = CATS.filter((c) => model.category_scores[c] !== null);
   const missing = CATS.filter((c) => model.category_scores[c] === null);
-  const coverage = covered.reduce((acc, c) => acc + weights[c], 0);
-  const parts = covered.map((c) => {
-    const score = model.category_scores[c] as number;
-    return { cat: c, w: weights[c], score, contrib: (weights[c] * score) / coverage };
-  });
+  const coverage = est.coverage;
   const signed = (v: number, digits = 1) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(digits)}`;
   const maxWeight = Math.max(tw.S, tw.A, tw.B);
   // 没进综合分的维度：区分"没测"和"测了但不可比"
@@ -218,7 +215,7 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
                               {BENCHMARK_SHORT_NAMES[bid] || meta.name}
                             </span>
                             <span className="col-span-2 text-right font-mono tabular-nums text-[var(--color-muted-foreground)]">
-                              {rep.score.toFixed(0)}%
+                              {rep.display?.endsWith("×") ? rep.display : `${rep.score.toFixed(0)}%`}
                             </span>
                             <div className="col-span-3 h-1.5 overflow-hidden rounded-full bg-[var(--color-fill2)]">
                               <div
@@ -246,59 +243,56 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
           </p>
         </div>
 
-        {/* 第 2 步：维度分按权重合成 */}
+        {/* 第 2 步：维度分按权重与统计信度连续合成 */}
         <div className="space-y-2">
           <div className="text-xs font-medium text-[var(--color-foreground)]">
-            {missing.length
-              ? tx(
-                  `② 综合分 = 已测维度加权平均（这里已测 ${pct(coverage)}）+ 缺测修正`,
-                  `② Overall = weighted mean of measured dimensions (here ${pct(coverage)}) + missing adjustment`
-                )
-              : tx(
-                  "② 综合分 = Σ(维度权重 × 维度分)，六个维度都有成绩",
-                  "② Overall = Σ(dimension weight × dimension score); all six dimensions are scored"
-                )}
+            {tx(
+              `② 综合分 = Σ 维度权重 × [信度 r × 实测分 + (1 − r) × 跨维基线]（已测权重 ${pct(coverage)}，可靠均分 ${est.reliableMean.toFixed(1)}）`,
+              `② Overall = Σ weight × [r × measured + (1 − r) × baseline] (${pct(coverage)} measured, reliable mean ${est.reliableMean.toFixed(1)})`
+            )}
           </div>
           <div className="space-y-1.5">
-            {CATS.map((c) => {
-              const part = parts.find((p) => p.cat === c);
+            {est.parts.map((part) => {
+              const c = part.cat;
+              const isIncomp = model.incomparable_categories?.includes(c);
+              const formula =
+                part.measured !== null
+                  ? `${pct(part.weight)} × [${pct(part.reliability)} × ${part.measured.toFixed(1)} + ${pct(1 - part.reliability)} × ${part.baseline.toFixed(1)}] = +${part.contrib.toFixed(2)}`
+                  : `${pct(part.weight)} × ${part.baseline.toFixed(1)} (${tx("缺测基线", "missing baseline")}) = +${part.contrib.toFixed(2)}`;
               return (
                 <div
                   key={c}
                   className="grid grid-cols-12 items-center gap-2 text-[11px]"
-                  title={
-                    part
-                      ? `${pct(part.w)} × ${part.score.toFixed(1)} ÷ ${pct(coverage)} = ${part.contrib.toFixed(2)}`
-                      : undefined
-                  }
+                  title={formula}
                 >
                   <span className="col-span-3 truncate text-[var(--color-foreground)]">{catLabel(c)}</span>
-                  <span className="col-span-3 font-mono tabular-nums text-[var(--color-muted-foreground)]">
-                    {part
-                      ? `${pct(part.w)} × ${part.score.toFixed(1)}`
-                      : model.incomparable_categories?.includes(c)
-                        ? tx(`${pct(weights[c])} · 不可比`, `${pct(weights[c])} · n/c`)
-                        : tx(`${pct(weights[c])} · 缺测`, `${pct(weights[c])} · untested`)}
+                  <span className="col-span-4 truncate font-mono tabular-nums text-[var(--color-muted-foreground)]">
+                    {part.measured !== null
+                      ? tx(
+                          `${pct(part.weight)} × ${part.effective.toFixed(1)} (实测 ${part.measured.toFixed(0)} · r=${pct(part.reliability)})`,
+                          `${pct(part.weight)} × ${part.effective.toFixed(1)} (raw ${part.measured.toFixed(0)} · r=${pct(part.reliability)})`
+                        )
+                      : isIncomp
+                        ? tx(`${pct(part.weight)} × ${part.baseline.toFixed(1)} · 不可比`, `${pct(part.weight)} × ${part.baseline.toFixed(1)} · n/c`)
+                        : tx(`${pct(part.weight)} × ${part.baseline.toFixed(1)} · 缺测`, `${pct(part.weight)} × ${part.baseline.toFixed(1)} · untested`)}
                   </span>
-                  <div className="col-span-4 h-2 overflow-hidden rounded-full bg-[var(--color-fill2)]">
-                    {part && (
-                      <div
-                        className="h-full rounded-full bg-[var(--color-primary)]"
-                        style={{ width: `${Math.min(100, part.contrib)}%` }}
-                      />
-                    )}
+                  <div className="col-span-3 h-2 overflow-hidden rounded-full bg-[var(--color-fill2)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--color-primary)]"
+                      style={{ width: `${Math.min(100, part.effective)}%`, opacity: 0.35 + 0.65 * part.reliability }}
+                    />
                   </div>
                   <span className="col-span-2 text-right font-mono tabular-nums text-[var(--color-foreground)]">
-                    {part ? `+${part.contrib.toFixed(1)}` : "—"}
+                    +{part.contrib.toFixed(1)}
                   </span>
                 </div>
               );
             })}
-            {est.line && (
+            {(missing.length > 0 || Math.abs(model.missing_adjustment) >= 0.05) && (
               <>
                 <div className="grid grid-cols-12 items-center gap-2 border-t border-[var(--color-hair)] pt-1.5 text-[11px]">
                   <span className="col-span-10 text-[var(--color-muted-foreground)]">
-                    {tx("已测维度加权平均（条长 = 贡献，满格 100 分）", "Measured mean (bar = contribution, full width = 100)")}
+                    {tx("已测维度直接加权平均", "Direct weighted mean of measured dimensions")}
                   </span>
                   <span className="col-span-2 text-right font-mono tabular-nums text-[var(--color-foreground)]">
                     {model.measured_score.toFixed(1)}
@@ -306,7 +300,12 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
                 </div>
                 <div className="grid grid-cols-12 items-center gap-2 text-[11px]">
                   <span className="col-span-10 text-[var(--color-muted-foreground)]">
-                    {tx(`缺测修正（${missingLabels.join("、")}）`, `Missing adjustment (${missingLabels.join(", ")})`)}
+                    {missing.length > 0
+                      ? tx(
+                          `信度与缺测修正（含缺测：${missingLabels.join("、")}）`,
+                          `Reliability & missing adjustment (missing: ${missingLabels.join(", ")})`
+                        )
+                      : tx("低信度单榜噪声平滑修正", "Low-reliability noise shrinkage adjustment")}
                   </span>
                   <span className="col-span-2 text-right font-mono tabular-nums text-[var(--color-foreground)]">
                     {signed(model.missing_adjustment)}
@@ -316,23 +315,19 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
             )}
             <div className="grid grid-cols-12 items-center gap-2 border-t border-[var(--color-hair)] pt-1.5 text-[11px]">
               <span className="col-span-10 text-[var(--color-muted-foreground)]">
-                {est.line
-                  ? tx("综合分", "Overall")
-                  : tx("综合分（条长 = 对综合分的贡献，满格 100 分）", "Overall (bar = contribution, full width = 100)")}
+                {tx("综合分（悬停各维可看完整融合算式）", "Overall (hover any dimension for exact formula)")}
               </span>
               <span className="col-span-2 text-right font-mono font-semibold tabular-nums text-[var(--color-foreground)]">
                 {model.overall_score.toFixed(1)}
               </span>
             </div>
           </div>
-          {est.line && (
-            <p className="text-[11px] leading-relaxed text-[var(--color-muted-foreground)]">
-              {tx(
-                `缺测修正怎么来：在 ${est.line.n} 个六维都测过的模型上，拟合“只用${covered.map(catLabel).join("、")}算的分”和“六维全算的分”的关系，得到 六维分 ≈ ${est.line.slope.toFixed(3)} × 已测分 ${est.line.intercept >= 0 ? "+" : "−"} ${Math.abs(est.line.intercept).toFixed(1)}；它的已测分 ${model.measured_score.toFixed(1)} 代进去 ≈ ${model.overall_score.toFixed(1)}。缺的维度本身不编分数。不直接用已测平均，是因为同一模型的 SQL、安全普遍比其它维低（高分模型尤甚），直接平均会让缺这两维的模型偏高、缺架构/运维/性能的偏低。`,
-                `How the adjustment works: across ${est.line.n} models scored on all six dimensions, the score from ${covered.map(catLabel).join(", ")} alone predicts the six-dimension score as 6D ≈ ${est.line.slope.toFixed(3)} × measured ${est.line.intercept >= 0 ? "+" : "−"} ${Math.abs(est.line.intercept).toFixed(1)}; plugging in its measured ${model.measured_score.toFixed(1)} gives ≈ ${model.overall_score.toFixed(1)}. Missing dimensions never get a made-up score. A plain average of measured dimensions would flatter models missing SQL or security (usually a model's weakest, especially at the top) and understate those missing architecture, systems or performance.`
-              )}
-            </p>
-          )}
+          <p className="text-[11px] leading-relaxed text-[var(--color-muted-foreground)]">
+            {tx(
+              `为什么按信度 r = τ₀² / (τ₀² + SE²)（τ₀ = ${tau0}）连续融合：单维榜单完全保留各维原始分数不变；但在合成综合分时，测了多项核心大榜、误差极小（SE ≈ 2）的维度信度达 90%+，几乎全按实测算；而只测了 1 个极高噪声微基准（如单测 Tinybird SQL，SE ≈ 17，r ≈ 13%）的维度只占它应有的小部分权重，剩余权重与完全缺测（r = 0%）采用同一套跨维度基线直线估算，彻底消除了“多测一个低精度小榜反而比交白卷倒扣 2–4 分”的断崖。`,
+              `Why blend by reliability r = τ₀² / (τ₀² + SE²) (τ₀ = ${tau0}): single-dimension boards keep raw dimension scores untouched, while Overall weights each dimension's direct score by its measurement reliability. Well-measured dimensions (SE ≈ 2) get >90% direct weight, whereas noisy single-benchmark dimensions (e.g. Tinybird-only SQL with SE ≈ 17, r ≈ 13%) smoothly fall back toward the same cross-dimension baseline used for untested dimensions (r = 0%), eliminating the cliff where taking a noisy micro-benchmark hurt more than leaving it untested.`
+            )}
+          </p>
         </div>
 
         {/* 第 3 步：区间与名次 */}
@@ -356,8 +351,8 @@ export function ScoringFlow({ snapshot }: ScoringFlowProps) {
           </div>
           <p className="text-[11px] leading-relaxed text-[var(--color-muted-foreground)]">
             {tx(
-              `区间 ${model.ci_90[0].toFixed(1)}–${model.ci_90[1].toFixed(1)} = 综合分 ± 1.645 × √(测量误差² + 缺测估计误差²)。测量误差 ±${est.measuredSe.toFixed(1)} 来自已测维度分的标准误${est.line ? `（按直线斜率 ${est.line.slope.toFixed(3)} 折算）` : ""}；${est.line ? `缺测估计误差 ±${est.predSd.toFixed(1)} 是那条直线在 ${est.line.n} 个参照模型上的实际预测误差，已测分离它们的平均水平越远越大` : "缺测估计误差为 0，六个维度都有成绩"}。`,
-              `Range ${model.ci_90[0].toFixed(1)}–${model.ci_90[1].toFixed(1)} = overall ± 1.645 × √(measurement² + missing-estimate²). Measurement ±${est.measuredSe.toFixed(1)} from the measured dimensions' standard errors${est.line ? ` (scaled by the line's slope ${est.line.slope.toFixed(3)})` : ""}; ${est.line ? `missing-estimate ±${est.predSd.toFixed(1)} is that line's actual prediction error over ${est.line.n} reference models, growing the further the measured score sits from their average` : "missing-estimate is 0 — all six dimensions are scored"}.`
+              `区间 ${model.ci_90[0].toFixed(1)}–${model.ci_90[1].toFixed(1)} = 综合分 ± 1.645 × √(测量误差² + 基线估计误差²)。其中已测部分的测量标准误为 ${est.measuredSe.toFixed(2)}，低信度与缺测部分由跨维度基线引入的结构预测标准误为 ${est.predSd.toFixed(2)}（合成标准误 ${est.se.toFixed(2)}）。`,
+              `Range ${model.ci_90[0].toFixed(1)}–${model.ci_90[1].toFixed(1)} = overall ± 1.645 × √(measurement² + baseline-prediction²), combining direct measurement SE ${est.measuredSe.toFixed(2)} with cross-dimension baseline prediction SE ${est.predSd.toFixed(2)} (total SE ${est.se.toFixed(2)}).`
             )}{" "}
             {model.complete
               ? tx(

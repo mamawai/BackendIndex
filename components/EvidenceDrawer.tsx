@@ -247,6 +247,19 @@ export function EvidenceDrawer({
                 {describeIncomplete(model, minCoverage, catLabel, tx, true)}
               </p>
             )}
+            {model.dynamicGuarded && (
+              <p className="mt-1 text-[11.5px] leading-relaxed text-[var(--color-warning)]">
+                {model.dynamicGuardReason === "single_benchmark"
+                  ? tx(
+                      "2 分保护：当前单维视图下该模型仅覆盖 1 项计分基准，按规则不排在 2 分以内的多基准实测模型之前。",
+                      "2-pt close-call guard: in this dimension view the model has only 1 scored benchmark, so it does not outrank multi-benchmark models within 2.0 points."
+                    )
+                  : tx(
+                      "2 分保护：该模型目前仅有单一实测来源，按规则不排在 2 分以内的多方实测模型之前。",
+                      "2-pt close-call guard: single-source Estimated models do not outrank multi-source measured models within 2.0 points."
+                    )}
+              </p>
+            )}
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
@@ -292,15 +305,16 @@ export function EvidenceDrawer({
               >
                 {tx("区间", "Range")} {model.ci_90[0].toFixed(1)}–{model.ci_90[1].toFixed(1)}
               </div>
-              {Object.values(model.category_scores).some((s) => s === null) && (
+              {(Object.values(model.category_scores).some((s) => s === null) ||
+                Math.abs(model.missing_adjustment) >= 0.15) && (
                 <div
                   className="whitespace-nowrap font-mono text-[10px] text-[var(--color-faint)]"
                   title={tx(
-                    "缺的维度不编分数；综合分 = 已测维度加权平均 + 按六维都测过的模型估出的修正，算法见方法论页示例",
-                    "Missing dimensions get no made-up score; overall = measured mean + an adjustment estimated from fully measured models (see the Methodology walkthrough)"
+                    "各维按统计信度 r = τ₀²/(τ₀²+SE²) 连续加权合成：高噪声单基准与缺测维度平滑向跨维度基线靠拢，详见方法论页示例",
+                    "Reliability-weighted synthesis r = τ₀²/(τ₀²+SE²): noisy single-benchmark and missing dimensions blend toward the cross-dimension baseline"
                   )}
                 >
-                  {tx("已测", "Measured")} {model.measured_score.toFixed(1)} · {tx("缺测修正", "Adj.")}{" "}
+                  {tx("已测均分", "Measured")} {model.measured_score.toFixed(1)} · {tx("信度/缺测修正", "Adj.")}{" "}
                   {model.missing_adjustment >= 0 ? "+" : "−"}
                   {Math.abs(model.missing_adjustment).toFixed(1)}
                 </div>
@@ -309,7 +323,7 @@ export function EvidenceDrawer({
 
             <div className="blk p-3.5">
               <div className="text-[11px] text-[var(--color-muted-foreground)]">
-                {tx("API 均价 / 1M", "Blended / 1M")}
+                {tx("API 均价 (3:1) / 1M", "Blended (3:1) / 1M")}
               </div>
               <div className="mt-1 font-mono text-lg font-medium text-[var(--color-foreground)]">
                 {formatPrice(model.blended_price_per_1m)}

@@ -43,14 +43,16 @@ const KEY_SHARED_BENCHMARKS = [
   "mirrorcode",
   "scale_swe_atlas_refactoring",
   "terminal_bench_41",
-  "otelbench",
+  "terminal_bench_40",
   "itbench_aa",
   "livesqlbench",
   "scale_sql_optimization",
   "tinybird_sql",
   "gso",
+  "inferencebench",
   "frontierswe_perf",
   "vals_ioi",
+  "cwe_bench_aa",
   "vals_cyber",
   "autobaxbench_hard",
 ];
@@ -614,7 +616,7 @@ export function CompareView({
                   </tr>
                   <tr>
                     <td className="text-[var(--color-muted-foreground)]">
-                      {tx("Blended API 均价 / 1M", "Blended Price / 1M")}
+                      {tx("API 均价 (3:1) / 1M", "Blended Price (3:1) / 1M")}
                     </td>
                     {activeModels.map((m) => (
                       <td key={m.canonical_id} className="text-right font-mono">
