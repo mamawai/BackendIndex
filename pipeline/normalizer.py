@@ -128,12 +128,15 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "deepseek-v4-pro": ("deepseek-v4-pro", "DeepSeek V4 Pro", "DeepSeek"),
     "deepseek-v4-1-flash": ("deepseek-v4-1-flash", "DeepSeek V4.1 Flash", "DeepSeek"),
     "deepseek-v3-2": ("deepseek-v3-2", "DeepSeek V3.2", "DeepSeek"),
+    "glm-5-4": ("glm-5-4", "GLM-5.4", "Z.ai"),
     "glm-5-3": ("glm-5-3", "GLM-5.3", "Z.ai"),
     "glm-5-2": ("glm-5-2", "GLM-5.2", "Z.ai"),
     "glm-5": ("glm-5", "GLM-5", "Z.ai"),
     "glm-4-7": ("glm-4-7", "GLM-4.7", "Z.ai"),
     "kimi-k3-1-pro": ("kimi-k3-1-pro", "Kimi K3.1 Pro", "Moonshot AI"),
     "kimi-k3-pro": ("kimi-k3-pro", "Kimi K3 Pro", "Moonshot AI"),
+    # OpenRouter 下架 moonshotai/kimi-k2 后，保留 Kimi K2 0711 的稳定主 ID 映射
+    "kimi-k2": ("kimi-k2-0711", "Kimi K2 0711", "Moonshot AI"),
     "kimi-k2-thinking": ("kimi-k2-thinking", "Kimi K2 Thinking", "Moonshot AI"),
     "minimax-m2-7": ("minimax-m2-7", "MiniMax M2.7", "MiniMax"),
     "minimax-m2-5": ("minimax-m2-5", "MiniMax M2.5", "MiniMax"),
@@ -144,10 +147,13 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "qwen3-8-max-0902": ("qwen-3-8-max", "Qwen 3.8 Max", "Alibaba"),
     "qwen3-7-max": ("qwen3-7-max", "Qwen3.7 Max", "Alibaba"),
     "qwen-3-7-max": ("qwen3-7-max", "Qwen3.7 Max", "Alibaba"),
+    "qwen3-7-max-2026-05-20": ("qwen3-7-max", "Qwen3.7 Max", "Alibaba"),
     "qwen3-7-plus": ("qwen3-7-plus", "Qwen3.7 Plus", "Alibaba"),
     "qwen-3-7-plus": ("qwen3-7-plus", "Qwen3.7 Plus", "Alibaba"),
     "qwen3-6-plus": ("qwen3-6-plus", "Qwen3.6 Plus", "Alibaba"),
     "qwen-3-6-plus": ("qwen3-6-plus", "Qwen3.6 Plus", "Alibaba"),
+    "qwen-3-6-27b": ("qwen3-6-27b", "Qwen3.6 27B", "Alibaba"),
+    "qwen-3-5-flash": ("qwen3-5-flash", "Qwen3.5-Flash", "Alibaba"),
     "qwen3-8-omni-flash": ("qwen3-8-omni-flash", "Qwen3.8 Omni Flash", "Alibaba"),
     "qwen4-max": ("qwen4-max", "Qwen4 Max", "Alibaba"),
     "qwen-4-max": ("qwen4-max", "Qwen4 Max", "Alibaba"),
@@ -156,6 +162,9 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
     "deepseek-v4-flash-0423": ("deepseek-v4-flash", "DeepSeek V4 Flash", "DeepSeek"),
     "claude-haiku-5-5": ("claude-haiku-5-5", "Claude Haiku 5.5", "Anthropic"),
     "haiku-5-5": ("claude-haiku-5-5", "Claude Haiku 5.5", "Anthropic"),
+    "haiku-4-5": ("claude-haiku-4-5", "Claude Haiku 4.5", "Anthropic"),
+    "opus-4-8": ("claude-opus-4-8", "Claude Opus 4.8", "Anthropic"),
+    "o3-mini-2025-01-31": ("o3-mini", "o3-mini", "OpenAI"),
     "kimi-k2-6": ("kimi-k2-6", "Kimi K2.6", "Moonshot AI"),
     "kimi-2-5": ("kimi-k2-5", "Kimi K2.5", "Moonshot AI"),
     "kimi-k2-5": ("kimi-k2-5", "Kimi K2.5", "Moonshot AI"),
@@ -189,12 +198,33 @@ EXPLICIT_ALIASES: dict[str, tuple[str, str, str]] = {
 
 EFFORT_PATTERN = re.compile(
     r"(?:\s*\(\s*(xhigh|high|medium|low|max|minimal|none|pro|promax|thinking|reasoning|ultra|unknown)\s*\)"
+    r"|\s*\(\s*((?:\d+k|no)\s+thinking)\s*\)"
     r"|\s*\[\s*(xhigh|high|medium|low|max|minimal|none|thinking|reasoning|ultra)\s*\]"
     r"|,\s*(xhigh|high|medium|low|max|minimal|none|promax|ultra|unknown)"
     r"|_(xhigh|high|medium|low|max|minimal|none|promax|ultra|unknown)"
     r"|-(xhigh|high|medium|low|max)(?=$|-)"
+    r"|(?<=\))\s+(xhigh|high|medium|low|max|minimal|none)"
     r"|\s*-\s*thinking(?:-\d+k)?)$",
     re.IGNORECASE,
+)
+
+# 仅对明确将推理档位以空格拼接在模型名后的系列做受控剥离，避免误伤 Qwen 3.7 Max / GPT-5.1 Codex Max 等自带 Max 的模型名
+SPACE_EFFORT_BASES = frozenset({"muse-spark-1-3"})
+SPACE_EFFORT_PATTERN = re.compile(r"\s+(xhigh|high|medium|low|max|minimal)$", re.IGNORECASE)
+
+HARNESS_KEYWORDS = (
+    "cli",
+    "code",
+    "agent",
+    "aider",
+    "harbor",
+    "openhands",
+    "codex",
+    "opencode",
+    "harness",
+    "terminus",
+    "grok build",
+    "mistral vibe",
 )
 
 # Separate precision suffixes from reasoning effort so quantization checkpoints fold cleanly without overwriting effort
@@ -242,6 +272,7 @@ EFFORT_CANON: dict[str, str] = {
     "extra-high": "xhigh",
     "x-high": "xhigh",
     "x high": "xhigh",
+    "no thinking": "none",
 }
 
 
@@ -324,6 +355,30 @@ def slugify(text: str) -> str:
     s = s.replace(".", "-")
     s = re.sub(r"[^a-z0-9]+", "-", s)
     return s.strip("-")
+
+
+def _peel_paren_wrapper(
+    cleaned: str,
+    harness: str | None,
+    effort: str | None,
+    is_agent_product: bool,
+) -> tuple[str, str | None, str | None, bool, bool]:
+    """Strip trailing '(Harness)' or 'Wrapper (BaseModel[, effort])' wrappers once per pass."""
+    paren_m = re.match(r"^(.+?)\s*\(([^()]+)\)\s*$", cleaned)
+    if not paren_m:
+        return cleaned, harness, effort, is_agent_product, False
+    outer, inner = paren_m.group(1).strip(), paren_m.group(2).strip()
+    eff_m = EFFORT_PATTERN.search(inner)
+    inner_eff = next((g for g in eff_m.groups() if g), None) if eff_m else None
+    inner_clean = EFFORT_PATTERN.sub("", inner).strip().rstrip(",").strip()
+    low_inner = inner.lower()
+    if any(re.search(rf"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])", low_inner) for k in HARNESS_KEYWORDS):
+        return outer, (harness or inner), effort, False, True
+    if infer_organization(inner_clean) != "Other" and infer_organization(outer) == "Other":
+        if inner_eff and inner_eff.lower() != "unknown":
+            effort = effort or inner_eff.lower()
+        return inner_clean, (harness or outer), effort, False, True
+    return cleaned, harness, effort, is_agent_product, False
 
 
 class ModelNormalizer:
@@ -422,40 +477,38 @@ class ModelNormalizer:
         if cleaned.lower().startswith("opencode-"):
             harness = harness or "OpenCode"
             cleaned = cleaned[len("opencode-"):].strip()
-        paren_m = re.match(r"^(.+?)\s*\(([^()]+)\)\s*$", cleaned)
-        if paren_m:
-            outer, inner = paren_m.group(1).strip(), paren_m.group(2).strip()
-            inner_clean = EFFORT_PATTERN.sub("", inner).strip().rstrip(",").strip()
-            if any(h in inner.lower() for h in ("cli", "code", "agent", "aider", "harbor", "openhands")):
-                harness = harness or inner
-                cleaned = outer
-                is_agent_product = False
-            elif infer_organization(inner_clean) != "Other" and infer_organization(outer) == "Other":
-                harness = harness or outer
-                cleaned = inner_clean
-                is_agent_product = False
 
         # Peel trailing (MM/YY) benchmark date tags and AA '(..., Default Fallback)' markers cleanly
         cleaned = re.sub(r"\s*\(\d{2}/\d{2}\)\s*$", "", cleaned).strip()
         cleaned = re.sub(r"\(\s*([^()]+?)\s*,\s*Default Fallback\s*\)$", r"(\1)", cleaned, flags=re.I).strip()
 
-        # Strip precision quantization tags (FP8, NVFP4) separately from reasoning effort
-        while QUANT_PATTERN.search(cleaned):
-            cleaned = QUANT_PATTERN.sub("", cleaned).strip()
-
-        # Strip effort/thinking tags only when pre-stripping string is not itself a canonical model ID
+        # Peel quantization, effort/thinking tags, and parenthesized harness wrappers in one loop
+        # so strings like "Model (Harness) max" unwrap both the trailing effort and the harness cleanly.
         effort: str | None = None
         while True:
             pre_slug = slugify(re.sub(r"\s+", " ", cleaned).strip())
             if pre_slug in self.known_aliases:
                 break
+            if QUANT_PATTERN.search(cleaned):
+                cleaned = QUANT_PATTERN.sub("", cleaned).strip()
+                continue
             m = EFFORT_PATTERN.search(cleaned)
-            if not m:
+            if m:
+                found = next((g for g in m.groups() if g), None)
+                if found and found.lower() != "unknown":
+                    effort = effort or found.lower()
+                cleaned = cleaned[: m.start()].strip()
+                continue
+            sm = SPACE_EFFORT_PATTERN.search(cleaned)
+            if sm and slugify(cleaned[: sm.start()]) in SPACE_EFFORT_BASES:
+                effort = effort or sm.group(1).lower()
+                cleaned = cleaned[: sm.start()].strip()
+                continue
+            cleaned, harness, effort, is_agent_product, peeled = _peel_paren_wrapper(
+                cleaned, harness, effort, is_agent_product
+            )
+            if not peeled:
                 break
-            found = next((g for g in m.groups() if g), None)
-            if found and found.lower() != "unknown":
-                effort = effort or found.lower()
-            cleaned = cleaned[: m.start()].strip()
 
         if slugify(cleaned) not in self.known_aliases:
             cleaned = re.sub(r"\s+\d{4}$", "", cleaned).strip()
